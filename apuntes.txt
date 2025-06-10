@@ -1,0 +1,10 @@
+Compliar: make
+
+Probar crear un directorio .png
+./mkfs.bwfs imagenes/
+
+Probar mount 
+mkdir punto
+./mount.bwfs imagenes punto -f -d
+
+otra consola: ls punto

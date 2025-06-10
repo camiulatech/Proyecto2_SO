@@ -1,22 +1,31 @@
 # Compilador y opciones
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -Iinclude
-LDFLAGS = -lpng
+CFLAGS_MOUNT = -Wall -Wextra -std=gnu99 -Iinclude
+LDFLAGS_MKFS = -lpng
+LDFLAGS_MOUNT = `pkg-config fuse3 --cflags --libs`
 
-# Archivos fuente y binarios
+# Archivos fuente
 MKFS_SRC = mkfs/mkfs.c
+MOUNT_SRC = mount/mount.c
+
+# Ejecutables
 MKFS_BIN = mkfs.bwfs
+MOUNT_BIN = mount.bwfs
 
 .PHONY: all clean
 
 # Compilación por defecto
-all: $(MKFS_BIN)
+all: $(MKFS_BIN) $(MOUNT_BIN)
 
-# Regla para compilar mkfs.bwfs
+# Compilar mkfs
 $(MKFS_BIN): $(MKFS_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS_MKFS)
 
-# Limpiar binarios generados
+# Compilar mount con -std=gnu99
+$(MOUNT_BIN): $(MOUNT_SRC)
+	$(CC) $(CFLAGS_MOUNT) -o $@ $< $(LDFLAGS_MOUNT)
+
+# Limpiar binarios
 clean:
-	rm -f $(MKFS_BIN)
-	
+	rm -f $(MKFS_BIN) $(MOUNT_BIN)

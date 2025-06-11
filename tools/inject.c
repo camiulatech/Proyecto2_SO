@@ -9,6 +9,12 @@
 #define IMG_HEIGHT 1000
 #define BLOCK_SIZE 1024
 
+// Declaración externa si no está en un .h
+void write_struct_to_png(const char *filename, const uint8_t *data, size_t size);
+
+#define INODO_PATH "fs_data/block_0001.png"
+#define DATA_PATH  "fs_data/block_0003.png"
+
 // Función para escribir una estructura en una imagen PNG (igual que mkfs)
 void write_struct_to_png(const char *filename, const uint8_t *data, size_t size) {
     FILE *fp = fopen(filename, "wb");
@@ -62,30 +68,21 @@ void write_struct_to_png(const char *filename, const uint8_t *data, size_t size)
 }
 
 int main() {
-    // Crear archivo hola.txt en el primer inodo
     Inode inodos[MAX_FILES] = {0};
 
-    FILE *fp = fopen("fs_data/block_0001.png", "rb");
-    if (!fp) {
-        perror("Error abriendo block_0001.png");
-        return 1;
-    }
-    fread(inodos, sizeof(inodos), 1, fp);
-    fclose(fp);
-
-    // Inodo 0 -> hola.txt
-    strcpy(inodos[0].name, "hola.txt");
+    // Inicializa el primer inodo como hola.txt
     inodos[0].used = 1;
-    inodos[0].size = 12;
-    inodos[0].block_pointers[0] = 3;  // usar block_0003.png
+    strncpy(inodos[0].name, "hola.txt", sizeof(inodos[0].name) - 1);
+    inodos[0].size = 12;  // Longitud de "¡Hola BWFS!\n"
+    inodos[0].block_pointers[0] = 3;  // Bloque de datos 3
 
-    // Guardar inodos actualizados
-    write_struct_to_png("fs_data/block_0001.png", (uint8_t *)inodos, sizeof(inodos));
+    // Escribe los inodos actualizados
+    write_struct_to_png(INODO_PATH, (uint8_t *)inodos, sizeof(inodos));
 
-    // Escribir contenido en el bloque 0003
+    // Escribe el contenido del archivo en el bloque de datos
     uint8_t contenido[BLOCK_SIZE] = {0};
     strcpy((char *)contenido, "¡Hola BWFS!\n");
-    write_struct_to_png("fs_data/block_0003.png", contenido, BLOCK_SIZE);
+    write_struct_to_png(DATA_PATH, contenido, BLOCK_SIZE);
 
     printf("Archivo 'hola.txt' inyectado exitosamente.\n");
     return 0;

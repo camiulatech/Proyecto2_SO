@@ -8,3 +8,12 @@ mkdir punto
 ./mount.bwfs imagenes punto -f -d
 
 otra consola: ls punto
+
+Probar inject imagenes 
+
+./mkfs.bwfs fs_data/
+gcc -o tools/inject tools/inject.c -Iinclude -lpng
+./tools/inject
+mkdir punto_montaje
+./mount.bwfs fs_data/ punto_montaje/
+

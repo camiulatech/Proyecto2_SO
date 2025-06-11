@@ -3,7 +3,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -Iinclude
 CFLAGS_MOUNT = -Wall -Wextra -std=gnu99 -Iinclude
 LDFLAGS_MKFS = -lpng
-LDFLAGS_MOUNT = `pkg-config fuse3 --cflags --libs`
+LDFLAGS_MOUNT = `pkg-config fuse3 --cflags --libs` -lpng
 
 # Archivos fuente
 MKFS_SRC = mkfs/mkfs.c

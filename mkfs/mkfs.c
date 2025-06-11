@@ -4,7 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <png.h>
-#include <stdint.h>   // define uint8_t
+#include <stdint.h>
 
 #include "../include/bwfs.h"
 
@@ -19,19 +19,18 @@
 #define BYTES_PER_BLOCK (BITS_PER_BLOCK / 8)
 
 #define USABLE_BLOCKS ((FS_SIZE_BYTES + BYTES_PER_BLOCK - 1) / BYTES_PER_BLOCK)
-#define TOTAL_BLOCKS (USABLE_BLOCKS)
+#define TOTAL_BLOCKS (USABLE_BLOCKS + 3)  // +3 para metadatos
 
-// -------------------------------------------------------------------
-
-void write_metadata_to_block0(const char *filename, const uint8_t *data, size_t size) {
+// Función general para escribir cualquier estructura en un bloque PNG
+void write_struct_to_png(const char *filename, const uint8_t *data, size_t size) {
     if (size > BYTES_PER_BLOCK) {
-        fprintf(stderr, "Metadatos exceden tamaño del bloque 0 (%lu > %d bytes)\n", size, BYTES_PER_BLOCK);
+        fprintf(stderr, "Estructura excede tamaño del bloque (%lu > %d bytes)\n", size, BYTES_PER_BLOCK);
         exit(1);
     }
 
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
-        perror("fopen block_0000.png");
+        perror("fopen");
         exit(1);
     }
 
@@ -64,9 +63,9 @@ void write_metadata_to_block0(const char *filename, const uint8_t *data, size_t 
             if (bit_index < size * 8) {
                 uint8_t byte = data[bit_index / 8];
                 uint8_t bit = (byte >> (7 - (bit_index % 8))) & 1;
-                row[x] = bit ? 0x00 : 0xFF;  // 1 = negro (ocupado), 0 = blanco (libre)
+                row[x] = bit ? 0x00 : 0xFF;
             } else {
-                row[x] = 0xFF;  // libre
+                row[x] = 0xFF;
             }
             bit_index++;
         }
@@ -79,6 +78,7 @@ void write_metadata_to_block0(const char *filename, const uint8_t *data, size_t 
     fclose(fp);
 }
 
+// Crea un bloque de datos completamente blanco
 void create_blank_png(const char *filename) {
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
@@ -105,7 +105,7 @@ void create_blank_png(const char *filename) {
     png_write_info(png_ptr, info_ptr);
 
     png_bytep row = malloc(IMG_WIDTH);
-    memset(row, 255, IMG_WIDTH);  // blanco
+    memset(row, 255, IMG_WIDTH);
 
     for (int y = 0; y < IMG_HEIGHT; y++)
         png_write_row(png_ptr, row);
@@ -116,8 +116,7 @@ void create_blank_png(const char *filename) {
     fclose(fp);
 }
 
-// -------------------------------------------------------------------
-
+// Programa principal
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         printf("Uso: %s <carpeta_destino>\n", argv[0]);
@@ -129,40 +128,41 @@ int main(int argc, char *argv[]) {
 
     char path[256];
 
-    // Reservar espacio para metadatos: superbloque + inodos + bitmap
-    size_t meta_size = sizeof(Superblock) + sizeof(Inode) * MAX_FILES + TOTAL_BLOCKS;
-    uint8_t *metadata = calloc(meta_size, 1);
-
+    // Inicializar estructuras
     Superblock sb = {
         .magic_number = FS_MAGIC,
         .total_blocks = TOTAL_BLOCKS,
-        .used_blocks = 0,
-        .inode_start = sizeof(Superblock),
-        .bitmap_start = sizeof(Superblock) + sizeof(Inode) * MAX_FILES
+        .used_blocks = 3,  // 0, 1, 2 ya ocupados
+        .inode_start = 1,
+        .bitmap_start = 2
     };
 
-    memcpy(metadata, &sb, sizeof(Superblock));
+    Inode inodos[MAX_FILES] = {0};
+    uint8_t bitmap[TOTAL_BLOCKS] = {0};
+    bitmap[0] = 1;  // superbloque
+    bitmap[1] = 1;  // inodos
+    bitmap[2] = 1;  // bitmap
 
-    Inode inode = {0};
-    for (int i = 0; i < MAX_FILES; i++) {
-        memcpy(metadata + sizeof(Superblock) + i * sizeof(Inode), &inode, sizeof(Inode));
-    }
-
-    // bitmap ya está en 0 (calloc) → todos los bloques libres
-
-    // Escribir metadatos en block_0000.png
+    // Guardar superbloque
     snprintf(path, sizeof(path), "%s/block_0000.png", folder);
-    write_metadata_to_block0(path, metadata, meta_size);
-    free(metadata);
+    write_struct_to_png(path, (uint8_t*)&sb, sizeof(sb));
 
-    // Crear los bloques restantes
-    for (int i = 1; i < TOTAL_BLOCKS; i++) {
+    // Guardar inodos
+    snprintf(path, sizeof(path), "%s/block_0001.png", folder);
+    write_struct_to_png(path, (uint8_t*)inodos, sizeof(inodos));
+
+    // Guardar bitmap
+    snprintf(path, sizeof(path), "%s/block_0002.png", folder);
+    write_struct_to_png(path, bitmap, sizeof(bitmap));
+
+    // Crear bloques vacíos para datos
+    for (int i = 3; i < TOTAL_BLOCKS; i++) {
         snprintf(path, sizeof(path), "%s/block_%04d.png", folder, i);
         create_blank_png(path);
     }
 
-    printf("FS de %d MB creado en %s con:\n", FS_SIZE_MB, folder);
-    printf("- Bloques de datos útiles: %d\n", USABLE_BLOCKS);
-    printf("- Total de imágenes PNG creadas: %d\n", TOTAL_BLOCKS);
+    printf("FS de %d MB creado exitosamente en %s\n", FS_SIZE_MB, folder);
+    printf("- Total bloques: %d\n", TOTAL_BLOCKS);
+    printf("- Bloques de datos disponibles: %d\n", USABLE_BLOCKS);
     return 0;
 }

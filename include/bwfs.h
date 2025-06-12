@@ -18,6 +18,7 @@ typedef struct {
 // i-nodo simple
 typedef struct {
     int used;
+    uint8_t is_dir;  // 👈 Nuevo campo: 1 si es directorio, 0 si es archivo
     char name[64];
     int size;
     int block_pointers[8]; // Soporte para archivos de hasta 8 bloques

@@ -117,12 +117,15 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
         return 0;
     }
 
+
     for (int i = 0; i < MAX_FILES; i++) {
-        if (inodos[i].used && strcmp(path + 1, inodos[i].name) == 0) {
-            stbuf->st_mode = S_IFREG | 0644;
-            stbuf->st_nlink = 1;
-            stbuf->st_size = inodos[i].size;
-            return 0;
+        for (int i = 0; i < MAX_FILES; i++) {
+            if (inodos[i].used && strcmp(path + 1, inodos[i].name) == 0) {
+                stbuf->st_mode = (inodos[i].is_dir ? S_IFDIR : S_IFREG) | 0755;
+                stbuf->st_nlink = 1;
+                stbuf->st_size = inodos[i].size;
+                return 0;
+            }
         }
     }
 
@@ -158,6 +161,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used) {
             inodos[i].used = 1;
+            inodos[i].is_dir = 0;  // 👈 Es un archivo regular
             strncpy(inodos[i].name, name, sizeof(inodos[i].name) - 1);
             inodos[i].size = 0;
             memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
@@ -273,12 +277,113 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset,
     return -ENOENT;
 }
 
+static int fs_unlink(const char *path) {
+    const char *name = path + 1;
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, name) == 0) {
+            if (inodos[i].is_dir) {
+                return -EISDIR;
+            }
+
+            for (int j = 0; j < 8; j++) {
+                int b = inodos[i].block_pointers[j];
+                if (b > 0) bitmap[b] = 0;
+            }
+
+            inodos[i].used = 0;
+            memset(inodos[i].name, 0, sizeof(inodos[i].name));
+            memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
+            inodos[i].size = 0;
+            inodos[i].is_dir = 0;
+
+            char pathi[256], pathbm[256];
+            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+            snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
+            write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+            write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
+
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static int fs_mkdir(const char *path, mode_t mode) {
+    (void)mode;
+    const char *name = path + 1;
+
+    // Verificar si ya existe
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, name) == 0)
+            return -EEXIST;
+    }
+
+    // Buscar inodo libre
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!inodos[i].used) {
+            inodos[i].used = 1;
+            inodos[i].is_dir = 1;  // 👈 IMPORTANTE: marcar como directorio
+            strncpy(inodos[i].name, name, sizeof(inodos[i].name) - 1);
+            inodos[i].size = 0;
+            memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
+
+            // Guardar inodos
+            char pathi[256];
+            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+            write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+
+            return 0;
+        }
+    }
+
+    return -ENOSPC;
+}
+
+static int fs_rmdir(const char *path) {
+    const char *name = path + 1;
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, name) == 0) {
+            if (!inodos[i].is_dir) {
+                return -ENOTDIR;  // No es un directorio
+            }
+
+            // Verificar si está vacío
+            for (int j = 0; j < MAX_FILES; j++) {
+                if (inodos[j].used && strcmp(inodos[j].name, name) != 0) {
+                    // Esto asume que no hay jerarquía. Si hubiera, se verificaría con path completo.
+                    // Si tuvieras subdirectorios deberías verificar si "inodos[j].name" empieza con "name/"
+                    return -ENOTEMPTY;
+                }
+            }
+
+            // Borrar el directorio
+            inodos[i].used = 0;
+            memset(&inodos[i], 0, sizeof(Inode));
+
+            // Guardar inodos
+            char pathi[256];
+            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+            write_struct_to_png(pathi, (uint8_t *)inodos, sizeof(inodos));
+
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
 static struct fuse_operations fs_oper = {
     .getattr = fs_getattr,
     .readdir = fs_readdir,
     .read = fs_read,
     .write = fs_write,
-    .create = fs_create
+    .create = fs_create,
+    .unlink = fs_unlink,
+    .mkdir = fs_mkdir,
+    .rmdir = fs_rmdir,
 };
 
 // --------------------- MAIN -------------------------

@@ -1,19 +1,27 @@
 Compliar: make
 
-Probar crear un directorio .png
+1. Probar crear un directorio .png
 ./mkfs.bwfs imagenes/
 
-Probar mount 
+2. Probar mount 
 mkdir punto
 ./mount.bwfs imagenes punto -f -d
 
 otra consola: ls punto
 
-Probar inject imagenes 
-
+3. Probar inject imagenes 
 ./mkfs.bwfs fs_data/
 gcc -o tools/inject tools/inject.c -Iinclude -lpng
 ./tools/inject
 mkdir punto_montaje
 ./mount.bwfs fs_data/ punto_montaje/
 
+4. Probar agregar archivos 
+./mkfs.bwfs fs_data/
+mkdir punto_montaje
+./mount.bwfs fs_data/ punto_montaje/
+
+Esto es en otra consola
+echo "Texto nuevo desde fs_write()" > punto_montaje/hola.txt
+cat punto_montaje/hola.txt
+touch punto_montaje/vacio.txt

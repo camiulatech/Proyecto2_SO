@@ -375,6 +375,81 @@ static int fs_rmdir(const char *path) {
     return -ENOENT;
 }
 
+static int fs_opendir(const char *path, struct fuse_file_info *fi) {
+    // Solo permitimos abrir el directorio raíz por ahora
+    if (strcmp(path, "/") == 0) {
+        return 0;
+    }
+
+    // Verificamos si el path es un directorio válido en los inodos
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && inodos[i].is_dir && strcmp(path + 1, inodos[i].name) == 0) {
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static int fs_rename(const char *from, const char *to, unsigned int flags) {
+    (void) flags;
+
+    const char *old_name = from + 1;
+    const char *new_name = to + 1;
+
+    // Verificar si ya existe un archivo con el nuevo nombre
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, new_name) == 0)
+            return -EEXIST;
+    }
+
+    // Buscar el archivo original
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, old_name) == 0) {
+            strncpy(inodos[i].name, new_name, sizeof(inodos[i].name) - 1);
+
+            // Guardar cambios
+            char pathi[256];
+            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+            write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+
+            return 0;
+        }
+    }
+
+    return -ENOENT;
+}
+
+static int fs_statfs(const char *path, struct statvfs *st) {
+    (void)path;
+    st->f_bsize = BLOCK_SIZE;
+    st->f_frsize = BLOCK_SIZE;
+    st->f_blocks = sb.total_blocks;
+
+    // contar bloques libres
+    int libres = 0;
+    for (int i = 0; i < sb.total_blocks; i++) {
+        if (bitmap[i] == 0)
+            libres++;
+    }
+    st->f_bfree = libres;
+    st->f_bavail = libres;
+
+    st->f_files = MAX_FILES;
+
+    // ✅ calcular nodos libres
+    int inodos_libres = 0;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!inodos[i].used)
+            inodos_libres++;
+    }
+    st->f_ffree = inodos_libres;
+    st->f_favail = inodos_libres;
+
+    st->f_namemax = 255;
+    return 0;
+}
+
 static struct fuse_operations fs_oper = {
     .getattr = fs_getattr,
     .readdir = fs_readdir,
@@ -384,6 +459,9 @@ static struct fuse_operations fs_oper = {
     .unlink = fs_unlink,
     .mkdir = fs_mkdir,
     .rmdir = fs_rmdir,
+    .opendir = fs_opendir,
+    .rename = fs_rename,
+    .statfs = fs_statfs,
 };
 
 // --------------------- MAIN -------------------------

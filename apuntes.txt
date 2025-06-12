@@ -25,3 +25,26 @@ Esto es en otra consola
 echo "Texto nuevo desde fs_write()" > punto_montaje/hola.txt
 cat punto_montaje/hola.txt
 touch punto_montaje/vacio.txt
+
+5. Probar unlink 
+echo "Hola" > punto_montaje/prueba.txt
+ls punto_montaje/
+rm punto_montaje/prueba.txt
+ls punto_montaje/  # Ya no debe estar
+
+6. Probar carpetas de archivos 
+mkdir punto_montaje/midirectorio
+ls -l punto_montaje/
+
+7. opendir
+ls punto_montaje/
+cd punto_montaje/
+
+8. rename
+touch punto_montaje/archivo1.txt
+mv punto_montaje/archivo1.txt punto_montaje/archivo_renombrado.txt
+ls punto_montaje/
+
+9. Stats
+stat -f  punto_montaje/
+df -h punto_montaje/

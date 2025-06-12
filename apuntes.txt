@@ -48,3 +48,17 @@ ls punto_montaje/
 9. Stats
 stat -f  punto_montaje/
 df -h punto_montaje/
+
+10. Fsync
+probar con nano, esto no es un comando se ve en la terminal del mount
+
+11. Access
+test -e punto_montaje/fabi.txt && echo "Existe" || echo "No existe"
+con el codigo mas avanzado revisar 
+
+12. Flush
+echo -n "data" | tee punto_montaje/test.txt
+con el codigo mas avanzado revisar 
+
+13. Lseek
+Fuse no llama a lseek

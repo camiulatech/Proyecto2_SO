@@ -450,6 +450,103 @@ static int fs_statfs(const char *path, struct statvfs *st) {
     return 0;
 }
 
+static int fs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
+    (void) isdatasync;
+    (void) fi;
+
+    const char *file_name = path + 1;
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, file_name) == 0) {
+            printf("🟢 fs_fsync ejecutado para '%s'\n", file_name);
+
+            // Forzar escritura de los metadatos principales
+            char path_sb[256], path_inodes[256], path_bitmap[256];
+
+            snprintf(path_sb, sizeof(path_sb), "%s/block_0000.png", mount_folder);
+            snprintf(path_inodes, sizeof(path_inodes), "%s/block_0001.png", mount_folder);
+            snprintf(path_bitmap, sizeof(path_bitmap), "%s/block_0002.png", mount_folder);
+
+            write_struct_to_png(path_sb, (const uint8_t *) &sb, sizeof(sb));
+            write_struct_to_png(path_inodes, (const uint8_t *) inodos, sizeof(inodos));
+            write_struct_to_png(path_bitmap, bitmap, sizeof(bitmap));
+
+            return 0;
+        }
+    }
+
+    printf("🔴 fs_fsync: archivo '%s' no encontrado\n", file_name);
+    return -ENOENT;
+}
+
+static int fs_access(const char *path, int mask) {
+    (void) mask;
+
+    printf("[access] Verificando acceso a: %s\n", path);
+
+    // Verificar si es el directorio raíz
+    if (strcmp(path, "/") == 0) {
+        printf("[access] Es el directorio raíz.\n");
+        return 0;
+    }
+
+    const char *name = path + 1;
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, name) == 0) {
+            printf("[access] Archivo o directorio '%s' encontrado (inode %d).\n", name, i);
+            return 0;
+        }
+    }
+
+    printf("[access] '%s' NO encontrado.\n", name);
+    return -ENOENT;
+}
+
+static int fs_flush(const char *path, struct fuse_file_info *fi) {
+    (void)fi;
+
+    const char *name = path + 1;
+    printf("[flush] Se cerró el descriptor para %s\n", name);
+
+    // No realizamos acciones adicionales porque ya se sincroniza con write/fsync
+    return 0;
+}
+
+static off_t fs_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi) {
+    (void)fi;
+
+    const char *name = path + 1;
+    printf("lseek(): path=%s, offset=%ld, whence=%d\n", name, off, whence);
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, name) == 0) {
+            off_t result = 0;
+
+            switch (whence) {
+                case SEEK_SET:
+                    result = off;
+                    break;
+                case SEEK_CUR:
+                    result = fi->fh + off;
+                    break;
+                case SEEK_END:
+                    result = inodos[i].size + off;
+                    break;
+                default:
+                    return -EINVAL;
+            }
+
+            if (result < 0 || result > inodos[i].size)
+                return -EINVAL;
+
+            return result;
+        }
+    }
+
+    return -ENOENT;
+}
+
 static struct fuse_operations fs_oper = {
     .getattr = fs_getattr,
     .readdir = fs_readdir,
@@ -462,6 +559,10 @@ static struct fuse_operations fs_oper = {
     .opendir = fs_opendir,
     .rename = fs_rename,
     .statfs = fs_statfs,
+    .fsync = fs_fsync,
+    .access = fs_access,
+    .flush = fs_flush,
+    .lseek = fs_lseek,
 };
 
 // --------------------- MAIN -------------------------
@@ -474,7 +575,8 @@ int main(int argc, char *argv[]) {
     realpath(argv[1], mount_folder);
     cargar_metadatos();
 
-    char *fuse_args[] = { argv[0], "-f", "-d", argv[2] };
+    // Sin modo de depuración (-d)
+    char *fuse_args[] = { argv[0], "-f", argv[2] };
     int argc_fuse = sizeof(fuse_args) / sizeof(fuse_args[0]);
     return fuse_main(argc_fuse, fuse_args, &fs_oper, NULL);
 }

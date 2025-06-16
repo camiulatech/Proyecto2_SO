@@ -1,31 +1,29 @@
-# Compilador y opciones
-CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -Iinclude
-CFLAGS_MOUNT = -Wall -Wextra -std=gnu99 -Iinclude
-LDFLAGS_MKFS = -lpng
-LDFLAGS_MOUNT = `pkg-config fuse3 --cflags --libs` -lpng
+# ─────────── variables comunes ───────────
+CC      = gcc
+CFLAGS  = -Wall -Wextra -Iinclude
+MKFS_LD = -lpng
+MNT_LD  = `pkg-config fuse3 --cflags --libs` -lpng
 
-# Archivos fuente
-MKFS_SRC = mkfs/mkfs.c
+# ─────────── fuentes  ───────────
+MKFS_SRC  = mkfs/mkfs.c
 MOUNT_SRC = mount/mount.c
+BWFS_SRC  = bwfs/bwfs_ops.c      # <-- la ruta que faltaba
 
-# Ejecutables
-MKFS_BIN = mkfs.bwfs
+# ─────────── ejecutables ───────────
+MKFS_BIN  = mkfs.bwfs
 MOUNT_BIN = mount.bwfs
 
 .PHONY: all clean
 
-# Compilación por defecto
 all: $(MKFS_BIN) $(MOUNT_BIN)
 
-# Compilar mkfs
+# mkfs.bwfs
 $(MKFS_BIN): $(MKFS_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS_MKFS)
+	$(CC) $(CFLAGS) -o $@ $< $(MKFS_LD)
 
-# Compilar mount con -std=gnu99
-$(MOUNT_BIN): $(MOUNT_SRC)
-	$(CC) $(CFLAGS_MOUNT) -o $@ $< $(LDFLAGS_MOUNT)
+# mount.bwfs  (mont.c + bwfs_ops.c)
+$(MOUNT_BIN): $(MOUNT_SRC) $(BWFS_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(MNT_LD)
 
-# Limpiar binarios
 clean:
 	rm -f $(MKFS_BIN) $(MOUNT_BIN)

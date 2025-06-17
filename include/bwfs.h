@@ -22,6 +22,7 @@ typedef struct {
     char name[64];
     int size;
     int block_pointers[8]; // Soporte para archivos de hasta 8 bloques
+    int parent_inode;
 } Inode;
 
 #endif

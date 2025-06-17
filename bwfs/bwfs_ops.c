@@ -16,6 +16,7 @@ Superblock sb;
 Inode inodos[MAX_FILES];
 char mount_folder[256];
 uint8_t bitmap[MAX_BLOCKS];
+uint16_t used_bytes[MAX_BLOCKS];
 
 // --------------------- FUNCIONES AUXILIARES -------------------------
 void read_struct_from_png(const char *filename, uint8_t *buffer, size_t size);
@@ -24,6 +25,7 @@ void read_data_block(int block_id, uint8_t *buffer, size_t size);
 
 void cargar_metadatos() {
     char path[256];
+
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
     read_struct_from_png(path, (uint8_t*)&sb, sizeof(Superblock));
 
@@ -32,6 +34,31 @@ void cargar_metadatos() {
 
     snprintf(path, sizeof(path), "%s/block_0002.png", mount_folder);
     read_struct_from_png(path, bitmap, sizeof(bitmap));
+
+    // 🔧 Inicializar used_bytes[] de forma inferida desde los inodos
+    memset(used_bytes, 0, sizeof(used_bytes));
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!inodos[i].used || inodos[i].is_dir) continue;
+
+        int size_restante = inodos[i].size;
+
+        for (int j = 0; j < 8 && size_restante > 0; j++) {
+            int block_id = inodos[i].block_pointers[j];
+            int offset = inodos[i].block_offsets[j];
+
+            if (block_id == 0) continue;
+
+            int bytes_en_bloque = (size_restante > BLOCK_SIZE - offset) ? (BLOCK_SIZE - offset) : size_restante;
+            int nuevo_total = offset + bytes_en_bloque;
+
+            if (nuevo_total > used_bytes[block_id]) {
+                used_bytes[block_id] = nuevo_total;
+            }
+
+            size_restante -= bytes_en_bloque;
+        }
+    }
 }
 
 // --------------------- DECLARACIONES FUSE -------------------------
@@ -278,62 +305,78 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     return -ENOSPC;
 }
 
-static int fs_write(const char *path, const char *buf, size_t size, off_t offset,
-    struct fuse_file_info *fi) {
+int find_block_with_space(size_t size) {
+    for (int i = 3; i < sb.total_blocks; i++) {
+        if (bitmap[i] == 1 && (BLOCK_SIZE - used_bytes[i]) >= size) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int allocate_new_block() {
+    for (int i = 3; i < sb.total_blocks; i++) {
+        if (bitmap[i] == 0) {
+            bitmap[i] = 1;
+            used_bytes[i] = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+int fs_write(const char *path, const char *buf, size_t size, off_t offset,
+             struct fuse_file_info *fi) {
     (void)fi;
+    const char *name = path + 1;
 
-    int idx = buscar_inodo_por_ruta(path);
-    if (idx < 0 || inodos[idx].is_dir) return -ENOENT;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && strcmp(inodos[i].name, name) == 0) {
 
-    size_t total_written = 0;
-    size_t block_index = offset / BLOCK_SIZE;
-    size_t block_offset = offset % BLOCK_SIZE;
+            size_t total_written = 0;
+            int blk_idx = 0;
 
-    while (total_written < size && block_index < 8) {
-    int block_id = inodos[idx].block_pointers[block_index];
+            while (total_written < size && blk_idx < 8) {
+                size_t needed = size - total_written;
+                int blk = find_block_with_space(needed);
+                if (blk == -1) blk = allocate_new_block();
+                if (blk == -1) return -ENOSPC;
 
-    if (block_id == 0) {
-    // Buscar bloque libre
-    for (int b = 3; b < sb.total_blocks; b++) {
-    if (bitmap[b] == 0) {
-        bitmap[b] = 1;
-        inodos[idx].block_pointers[block_index] = b;
-        block_id = b;
-        break;
+                // Calcular offset real en el bloque
+                size_t offset_in_block = used_bytes[blk];
+                size_t to_copy = (BLOCK_SIZE - offset_in_block > needed) ? needed : BLOCK_SIZE - offset_in_block;
+
+                uint8_t temp[BLOCK_SIZE] = {0};
+                char pathb[256];
+                snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, blk);
+                read_struct_from_png(pathb, temp, BLOCK_SIZE);
+
+                memcpy(temp + offset_in_block, buf + total_written, to_copy);
+                write_struct_to_png(pathb, temp, BLOCK_SIZE);
+
+                inodos[i].block_pointers[blk_idx] = blk;
+                inodos[i].block_offsets[blk_idx] = offset_in_block;
+
+                used_bytes[blk] += to_copy;
+                total_written += to_copy;
+                blk_idx++;
+            }
+
+            if ((size_t)(offset + total_written) > (size_t)inodos[i].size)
+                inodos[i].size = offset + total_written;
+
+            // Guardar cambios
+            char pathi[256], pathbm[256];
+            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+            snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
+            write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+            write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
+
+            return total_written;
+        }
     }
-    }
-    if (block_id == 0) return -ENOSPC;
-    }
 
-    uint8_t temp_block[BLOCK_SIZE] = {0};
-    read_data_block(block_id, temp_block, BLOCK_SIZE);
-
-    size_t to_copy = BLOCK_SIZE - block_offset;
-    if (to_copy > size - total_written) to_copy = size - total_written;
-
-    memcpy(temp_block + block_offset, buf + total_written, to_copy);
-
-    char pathb[256];
-    snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, block_id);
-    write_struct_to_png(pathb, temp_block, BLOCK_SIZE);
-
-    total_written += to_copy;
-    block_index++;
-    block_offset = 0;
-    }
-
-    // Actualizar tamaño
-    if ((size_t)(offset + total_written) > (size_t)inodos[idx].size)
-    inodos[idx].size = offset + total_written;
-
-    // Guardar metadatos
-    char pathi[256], pathbm[256];
-    snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
-    snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
-    write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
-    write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
-
-    return total_written;
+    return -ENOENT;
 }
 
 static int fs_read(const char *path, char *buf, size_t size, off_t offset,

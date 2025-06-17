@@ -9,6 +9,7 @@ extern char mount_folder[256];
 extern Superblock sb;
 extern Inode inodos[MAX_FILES];
 extern uint8_t bitmap[MAX_BLOCKS];
+extern uint16_t used_bytes[MAX_BLOCKS];
 
 void cargar_metadatos(void);
 

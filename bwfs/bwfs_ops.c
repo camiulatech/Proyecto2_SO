@@ -325,93 +325,121 @@ int allocate_new_block() {
     return -1;
 }
 
-int fs_write(const char *path, const char *buf, size_t size, off_t offset,
-             struct fuse_file_info *fi) {
+static int fs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
-    const char *name = path + 1;
 
-    for (int i = 0; i < MAX_FILES; i++) {
-        if (inodos[i].used && strcmp(inodos[i].name, name) == 0) {
+    int inodo_idx = buscar_inodo_por_ruta(path);
+    if (inodo_idx < 0 || inodos[inodo_idx].is_dir) return -ENOENT;
 
-            size_t total_written = 0;
-            int blk_idx = 0;
+    Inode *inodo = &inodos[inodo_idx];
 
-            while (total_written < size && blk_idx < 8) {
-                size_t needed = size - total_written;
-                int blk = find_block_with_space(needed);
-                if (blk == -1) blk = allocate_new_block();
-                if (blk == -1) return -ENOSPC;
-
-                // Calcular offset real en el bloque
-                size_t offset_in_block = used_bytes[blk];
-                size_t to_copy = (BLOCK_SIZE - offset_in_block > needed) ? needed : BLOCK_SIZE - offset_in_block;
-
-                uint8_t temp[BLOCK_SIZE] = {0};
-                char pathb[256];
-                snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, blk);
-                read_struct_from_png(pathb, temp, BLOCK_SIZE);
-
-                memcpy(temp + offset_in_block, buf + total_written, to_copy);
-                write_struct_to_png(pathb, temp, BLOCK_SIZE);
-
-                inodos[i].block_pointers[blk_idx] = blk;
-                inodos[i].block_offsets[blk_idx] = offset_in_block;
-
-                used_bytes[blk] += to_copy;
-                total_written += to_copy;
-                blk_idx++;
+    // 🔄 Limpiar bloques anteriores (solo si offset == 0, sobrescribir)
+    if (offset == 0) {
+        for (int j = 0; j < 8; j++) {
+            int b = inodo->block_pointers[j];
+            if (b > 0) {
+                used_bytes[b] -= BLOCK_SIZE - inodo->block_offsets[j];
+                if (used_bytes[b] < 0) used_bytes[b] = 0;
             }
-
-            if ((size_t)(offset + total_written) > (size_t)inodos[i].size)
-                inodos[i].size = offset + total_written;
-
-            // Guardar cambios
-            char pathi[256], pathbm[256];
-            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
-            snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
-            write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
-            write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
-
-            return total_written;
+            inodo->block_pointers[j] = 0;
+            inodo->block_offsets[j] = 0;
         }
+        inodo->size = 0;
     }
 
-    return -ENOENT;
+    size_t total_written = 0;
+    for (int i = 0; i < 8 && total_written < size; i++) {
+        int espacio_necesario = size - total_written;
+
+        // Buscar bloque con espacio suficiente
+        int elegido = -1;
+        for (int b = 3; b < sb.total_blocks; b++) {
+            if (BLOCK_SIZE - used_bytes[b] >= espacio_necesario) {
+                elegido = b;
+                break;
+            }
+        }
+
+        // Si no se encontró uno con espacio exacto, tomar el primero libre
+        if (elegido == -1) {
+            for (int b = 3; b < sb.total_blocks; b++) {
+                if (bitmap[b] == 0) {
+                    elegido = b;
+                    bitmap[b] = 1;
+                    break;
+                }
+            }
+        }
+
+        if (elegido == -1) return -ENOSPC;
+
+        uint8_t tmp[BLOCK_SIZE];
+        char pathb[256];
+        snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, elegido);
+        read_struct_from_png(pathb, tmp, BLOCK_SIZE);
+
+        int offset_bloque = used_bytes[elegido];
+        int bytes_a_copiar = BLOCK_SIZE - offset_bloque;
+        if (bytes_a_copiar > espacio_necesario) bytes_a_copiar = espacio_necesario;
+
+        memcpy(tmp + offset_bloque, buf + total_written, bytes_a_copiar);
+        write_struct_to_png(pathb, tmp, BLOCK_SIZE);
+
+        inodo->block_pointers[i] = elegido;
+        inodo->block_offsets[i] = offset_bloque;
+        used_bytes[elegido] += bytes_a_copiar;
+
+        total_written += bytes_a_copiar;
+    }
+
+    if ((size_t)(offset + total_written) > (size_t)inodo->size)
+        inodo->size = offset + total_written;
+
+    // Persistir cambios
+    char pathi[256], pathbm[256];
+    snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+    snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
+    write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+    write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
+
+    return total_written;
 }
 
 static int fs_read(const char *path, char *buf, size_t size, off_t offset,
     struct fuse_file_info *fi) {
-(void)fi;
+    (void)fi;
 
     int idx = buscar_inodo_por_ruta(path);
     if (idx < 0 || inodos[idx].is_dir) return -ENOENT;
 
     if ((size_t)offset >= inodos[idx].size)
-    return 0;
+        return 0;
 
     size_t bytes_to_read = (offset + size > inodos[idx].size)
-    ? (inodos[idx].size - offset) : size;
+        ? (inodos[idx].size - offset) : size;
 
     size_t block_index = offset / BLOCK_SIZE;
     size_t block_offset = offset % BLOCK_SIZE;
     size_t total_read = 0;
 
     while (total_read < bytes_to_read && block_index < 8) {
-    int block_id = inodos[idx].block_pointers[block_index];
-    if (block_id == 0) break;
+        int block_id = inodos[idx].block_pointers[block_index];
+        if (block_id == 0) break;
 
-    uint8_t temp_block[BLOCK_SIZE];
-    read_data_block(block_id, temp_block, BLOCK_SIZE);
+        uint8_t temp_block[BLOCK_SIZE];
+        read_data_block(block_id, temp_block, BLOCK_SIZE);
 
-    size_t to_copy = BLOCK_SIZE - block_offset;
-    if (to_copy > bytes_to_read - total_read)
-    to_copy = bytes_to_read - total_read;
+        size_t real_offset = inodos[idx].block_offsets[block_index] + block_offset;
+        size_t max_data_in_block = BLOCK_SIZE - real_offset;
+        size_t to_copy = (bytes_to_read - total_read < max_data_in_block)
+                            ? (bytes_to_read - total_read)
+                            : max_data_in_block;
 
-    memcpy(buf + total_read, temp_block + block_offset, to_copy);
+        memcpy(buf + total_read, temp_block + real_offset, to_copy);
 
-    total_read += to_copy;
-    block_index++;
-    block_offset = 0;
+        total_read += to_copy;
+        block_index++;
+        block_offset = 0;  // Solo se aplica al primer bloque
     }
 
     return total_read;
@@ -439,6 +467,7 @@ static int fs_unlink(const char *path) {
     // Liberar bloques de datos
     for (int j = 0; j < 8; j++) {
         int b = inodos[idx].block_pointers[j];
+        used_bytes[b] = 0;
         if (b > 0) bitmap[b] = 0;
     }
 

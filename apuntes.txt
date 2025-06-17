@@ -42,7 +42,7 @@ cd punto_montaje/
 
 8. rename
 touch punto_montaje/prueba.txt
-mv punto_montaje/prueba.txt punto_montaje/archivo_renombrado.txt
+mv punto_montaje/hola.txt punto_montaje/archivo_renombrado.txt
 ls punto_montaje/
 
 PARA LUEGO PORQUE DAN PEREZA

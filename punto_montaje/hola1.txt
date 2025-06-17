@@ -1,1 +1,0 @@
-Texto nuevo desde fs_write()

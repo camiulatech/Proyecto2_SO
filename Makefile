@@ -4,21 +4,24 @@ CFLAGS  = -Wall -Wextra -Iinclude
 MKFS_LD = -lpng
 MNT_LD  = `pkg-config fuse3 --cflags --libs` -lpng
 FSCK_LD = -lpng
+DEFRAG_LD = -lpng                # ← nuevo
 
 # ─────────── fuentes  ───────────
-MKFS_SRC  = mkfs/mkfs.c
-MOUNT_SRC = mount/mount.c
-BWFS_SRC  = bwfs/bwfs_ops.c
-FSCK_SRC  = fsck/fsck.c      # ← nuevo
+MKFS_SRC   = mkfs/mkfs.c
+MOUNT_SRC  = mount/mount.c
+BWFS_SRC   = bwfs/bwfs_ops.c
+FSCK_SRC   = fsck/fsck.c
+DEFRAG_SRC = tools/defrag.c $(BWFS_SRC)   # ← nuevo
 
 # ─────────── ejecutables ───────────
-MKFS_BIN  = mkfs.bwfs
-MOUNT_BIN = mount.bwfs
-FSCK_BIN  = fsck.bwfs
+MKFS_BIN   = mkfs.bwfs
+MOUNT_BIN  = mount.bwfs
+FSCK_BIN   = fsck.bwfs
+DEFRAG_BIN = defrag.bwfs          # ← nuevo
 
 .PHONY: all clean
 
-all: $(MKFS_BIN) $(MOUNT_BIN) $(FSCK_BIN)
+all: $(MKFS_BIN) $(MOUNT_BIN) $(FSCK_BIN) $(DEFRAG_BIN)
 
 # mkfs.bwfs
 $(MKFS_BIN): $(MKFS_SRC)
@@ -32,5 +35,9 @@ $(MOUNT_BIN): $(MOUNT_SRC) $(BWFS_SRC)
 $(FSCK_BIN): $(FSCK_SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(FSCK_LD)
 
+# defrag.bwfs
+$(DEFRAG_BIN): $(DEFRAG_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(DEFRAG_LD)
+
 clean:
-	rm -f $(MKFS_BIN) $(MOUNT_BIN) $(FSCK_BIN)
+	rm -f $(MKFS_BIN) $(MOUNT_BIN) $(FSCK_BIN) $(DEFRAG_BIN)

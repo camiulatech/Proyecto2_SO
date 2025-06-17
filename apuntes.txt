@@ -1,11 +1,11 @@
 Compliar: make
 
 1. Probar crear un directorio .png
-./mkfs.bwfs imagenes/
+./mkfs.bwfs fs_data/
 
 2. Probar mount 
-mkdir punto
-./mount.bwfs imagenes punto -f -d
+mkdir punto_montaje
+./mount.bwfs fs_data punto_montaje
 
 otra consola: ls punto
 
@@ -29,7 +29,7 @@ touch punto_montaje/vacio.txt
 5. Probar unlink 
 echo "Hola" > punto_montaje/prueba.txt
 ls punto_montaje/
-rm punto_montaje/prueba.txt
+rm punto_montaje/hola.txt
 ls punto_montaje/  # Ya no debe estar
 
 6. Probar carpetas de archivos 
@@ -41,10 +41,11 @@ ls punto_montaje/
 cd punto_montaje/
 
 8. rename
-touch punto_montaje/archivo1.txt
-mv punto_montaje/archivo1.txt punto_montaje/archivo_renombrado.txt
+touch punto_montaje/prueba.txt
+mv punto_montaje/prueba.txt punto_montaje/archivo_renombrado.txt
 ls punto_montaje/
 
+PARA LUEGO PORQUE DAN PEREZA
 9. Stats
 stat -f  punto_montaje/
 df -h punto_montaje/
@@ -61,4 +62,4 @@ echo -n "data" | tee punto_montaje/test.txt
 con el codigo mas avanzado revisar 
 
 13. Lseek
-Fuse no llama a lseek
+Fuse no llama a lseek (oka)

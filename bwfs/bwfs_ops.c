@@ -292,7 +292,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
             inodos[i].parent_inode = padre_idx;
             strncpy(inodos[i].name, nombre, sizeof(inodos[i].name) - 1);
             inodos[i].size = 0;
-            memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
+            memset(inodos[i].block_offsets, 0, sizeof(inodos[i].block_offsets));
 
             char pathi[256];
             snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
@@ -333,16 +333,16 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
 
     Inode *inodo = &inodos[inodo_idx];
 
-    // 🔄 Limpiar bloques anteriores (solo si offset == 0, sobrescribir)
+    // Si se sobreescribe desde cero, limpiar bloques usados por este archivo
     if (offset == 0) {
         for (int j = 0; j < 8; j++) {
             int b = inodo->block_pointers[j];
             if (b > 0) {
-                used_bytes[b] -= BLOCK_SIZE - inodo->block_offsets[j];
-                if (used_bytes[b] < 0) used_bytes[b] = 0;
+                // No reducir used_bytes[b], otros archivos pueden usarlo
+                // Solo limpiar punteros de este inodo
+                inodo->block_pointers[j] = 0;
+                inodo->block_offsets[j] = 0;
             }
-            inodo->block_pointers[j] = 0;
-            inodo->block_offsets[j] = 0;
         }
         inodo->size = 0;
     }
@@ -360,12 +360,13 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
             }
         }
 
-        // Si no se encontró uno con espacio exacto, tomar el primero libre
+        // Si no se encontró, buscar bloque libre
         if (elegido == -1) {
             for (int b = 3; b < sb.total_blocks; b++) {
                 if (bitmap[b] == 0) {
                     elegido = b;
                     bitmap[b] = 1;
+                    sb.used_blocks++;
                     break;
                 }
             }
@@ -373,6 +374,7 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
 
         if (elegido == -1) return -ENOSPC;
 
+        // Leer contenido actual del bloque
         uint8_t tmp[BLOCK_SIZE];
         char pathb[256];
         snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, elegido);
@@ -385,6 +387,7 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
         memcpy(tmp + offset_bloque, buf + total_written, bytes_a_copiar);
         write_struct_to_png(pathb, tmp, BLOCK_SIZE);
 
+        // Registrar en inodo
         inodo->block_pointers[i] = elegido;
         inodo->block_offsets[i] = offset_bloque;
         used_bytes[elegido] += bytes_a_copiar;
@@ -418,28 +421,31 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset,
     size_t bytes_to_read = (offset + size > inodos[idx].size)
         ? (inodos[idx].size - offset) : size;
 
-    size_t block_index = offset / BLOCK_SIZE;
-    size_t block_offset = offset % BLOCK_SIZE;
     size_t total_read = 0;
+    size_t logical_offset = offset;
 
-    while (total_read < bytes_to_read && block_index < 8) {
-        int block_id = inodos[idx].block_pointers[block_index];
+    for (int i = 0; i < 8 && total_read < bytes_to_read; i++) {
+        int block_id = inodos[idx].block_pointers[i];
+        int block_offset = inodos[idx].block_offsets[i];
         if (block_id == 0) break;
+
+        if (logical_offset >= BLOCK_SIZE) {
+            logical_offset -= BLOCK_SIZE;
+            continue;
+        }
 
         uint8_t temp_block[BLOCK_SIZE];
         read_data_block(block_id, temp_block, BLOCK_SIZE);
 
-        size_t real_offset = inodos[idx].block_offsets[block_index] + block_offset;
-        size_t max_data_in_block = BLOCK_SIZE - real_offset;
-        size_t to_copy = (bytes_to_read - total_read < max_data_in_block)
-                            ? (bytes_to_read - total_read)
-                            : max_data_in_block;
+        size_t read_offset = block_offset + logical_offset;
+        size_t available = BLOCK_SIZE - read_offset;
+        size_t to_copy = bytes_to_read - total_read;
+        if (to_copy > available)
+            to_copy = available;
 
-        memcpy(buf + total_read, temp_block + real_offset, to_copy);
-
+        memcpy(buf + total_read, temp_block + read_offset, to_copy);
         total_read += to_copy;
-        block_index++;
-        block_offset = 0;  // Solo se aplica al primer bloque
+        logical_offset = 0;
     }
 
     return total_read;

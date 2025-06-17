@@ -2,7 +2,7 @@
 #ifndef BWFS_H
 #define BWFS_H
 
-#define BLOCK_SIZE 1024         // Simulado: 1 bloque = 1 imagen = 1024 bytes
+#define BLOCK_SIZE 125000       // Simulado: 1 bloque = 1 imagen = 1024 bytes
 #define MAX_BLOCKS 1024         // Máximo de bloques por FS
 #define MAX_FILES 128
 

@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <png.h>
 #include <libgen.h>
+#include <stdbool.h>
 #include "../include/bwfs.h"
 
 // --------------------- GLOBALS -------------------------
@@ -18,6 +19,18 @@ char mount_folder[256];
 uint8_t bitmap[MAX_BLOCKS];
 uint16_t used_bytes[MAX_BLOCKS];
 
+// Máximo de regiones por bloque compartido
+#define MAX_REGIONES 64
+
+typedef struct {
+int inodo_id; // Índice del inodo que usa esta región
+int offset; // Desplazamiento dentro del bloque
+int size; // Tamaño ocupado
+} RegionUso;
+
+// regiones_bloque[bloque][i]
+RegionUso regiones_bloque[MAX_BLOCKS][MAX_REGIONES];
+
 // --------------------- FUNCIONES AUXILIARES -------------------------
 void read_struct_from_png(const char *filename, uint8_t *buffer, size_t size);
 void write_struct_to_png(const char *filename, const uint8_t *data, size_t size);
@@ -25,7 +38,6 @@ void read_data_block(int block_id, uint8_t *buffer, size_t size);
 
 void cargar_metadatos() {
     char path[256];
-
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
     read_struct_from_png(path, (uint8_t*)&sb, sizeof(Superblock));
 
@@ -35,25 +47,42 @@ void cargar_metadatos() {
     snprintf(path, sizeof(path), "%s/block_0002.png", mount_folder);
     read_struct_from_png(path, bitmap, sizeof(bitmap));
 
-    // 🔧 Inicializar used_bytes[] de forma inferida desde los inodos
+    // 🔧 Inicializar used_bytes[]
     memset(used_bytes, 0, sizeof(used_bytes));
 
+    // 🧱 Inicializar regiones por bloque
+    memset(regiones_bloque, 0, sizeof(regiones_bloque));
+
+    // Recorremos los inodos y reconstruimos regiones y uso de bytes
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used || inodos[i].is_dir) continue;
 
         int size_restante = inodos[i].size;
 
-        for (int j = 0; j < 8 && size_restante > 0; j++) {
+        for (int j = 0; j < 30 && size_restante > 0; j++) {
             int block_id = inodos[i].block_pointers[j];
-            int offset = inodos[i].block_offsets[j];
+            int offset   = inodos[i].block_offsets[j];
 
             if (block_id == 0) continue;
 
-            int bytes_en_bloque = (size_restante > BLOCK_SIZE - offset) ? (BLOCK_SIZE - offset) : size_restante;
-            int nuevo_total = offset + bytes_en_bloque;
+            int bytes_en_bloque = (size_restante > BLOCK_SIZE - offset)
+                                ? (BLOCK_SIZE - offset)
+                                : size_restante;
 
+            // Actualizar used_bytes
+            int nuevo_total = offset + bytes_en_bloque;
             if (nuevo_total > used_bytes[block_id]) {
                 used_bytes[block_id] = nuevo_total;
+            }
+
+            // Registrar la región en regiones_bloque
+            for (int r = 0; r < MAX_REGIONES; r++) {
+                if (regiones_bloque[block_id][r].size == 0) {
+                    regiones_bloque[block_id][r].inodo_id = i;
+                    regiones_bloque[block_id][r].offset   = offset;
+                    regiones_bloque[block_id][r].size     = bytes_en_bloque;
+                    break;
+                }
             }
 
             size_restante -= bytes_en_bloque;
@@ -71,6 +100,7 @@ static int fs_open(const char *, struct fuse_file_info *);
 static int fs_unlink(const char *);
 static int fs_mkdir(const char *, mode_t);
 static int fs_rmdir(const char *);
+static int fs_truncate(const char *path, off_t size);
 static int fs_opendir(const char *, struct fuse_file_info *);
 static int fs_rename(const char *, const char *, unsigned int);
 static int fs_statfs(const char *, struct statvfs *);
@@ -89,6 +119,7 @@ struct fuse_operations fs_oper = {
     .unlink = fs_unlink,
     .mkdir = fs_mkdir,
     .rmdir = fs_rmdir,
+    .truncate = fs_truncate,
     .opendir = fs_opendir,
     .rename = fs_rename,
     .statfs = fs_statfs,
@@ -333,39 +364,55 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
 
     Inode *inodo = &inodos[inodo_idx];
 
-    // Si se sobreescribe desde cero, limpiar bloques usados por este archivo
     if (offset == 0) {
-        for (int j = 0; j < 8; j++) {
-            int b = inodo->block_pointers[j];
-            if (b > 0) {
-                // No reducir used_bytes[b], otros archivos pueden usarlo
-                // Solo limpiar punteros de este inodo
-                inodo->block_pointers[j] = 0;
-                inodo->block_offsets[j] = 0;
+        // Limpiar asignaciones anteriores del inodo
+        for (int b = 0; b < sb.total_blocks; b++) {
+            for (int r = 0; r < MAX_REGIONES; r++) {
+                if (regiones_bloque[b][r].inodo_id == inodo_idx) {
+                    regiones_bloque[b][r].inodo_id = -1;
+                    regiones_bloque[b][r].size = 0;
+                }
             }
         }
+        memset(inodo->block_pointers, 0, sizeof(inodo->block_pointers));
+        memset(inodo->block_offsets, 0, sizeof(inodo->block_offsets));
+        memset(inodo->fragment_order, 0, sizeof(inodo->fragment_order));
         inodo->size = 0;
     }
 
     size_t total_written = 0;
-    for (int i = 0; i < 8 && total_written < size; i++) {
-        int espacio_necesario = size - total_written;
+    int fragment_count = 0;
 
-        // Buscar bloque con espacio suficiente
+    for (int i = 0; i < 30 && total_written < size; i++) {
         int elegido = -1;
+        int offset_en_bloque = -1;
+
+        // Buscar bloque con espacio continuo al final
         for (int b = 3; b < sb.total_blocks; b++) {
-            if (BLOCK_SIZE - used_bytes[b] >= espacio_necesario) {
+            if (bitmap[b] == 0) continue;
+
+            int max_end = 0;
+            for (int r = 0; r < MAX_REGIONES; r++) {
+                if (regiones_bloque[b][r].size > 0) {
+                    int end = regiones_bloque[b][r].offset + regiones_bloque[b][r].size;
+                    if (end > max_end) max_end = end;
+                }
+            }
+
+            if (BLOCK_SIZE - max_end >= (int)(size - total_written)) {
                 elegido = b;
+                offset_en_bloque = max_end;
                 break;
             }
         }
 
-        // Si no se encontró, buscar bloque libre
+        // Si no hay bloque con suficiente espacio, usar uno nuevo
         if (elegido == -1) {
             for (int b = 3; b < sb.total_blocks; b++) {
                 if (bitmap[b] == 0) {
                     elegido = b;
                     bitmap[b] = 1;
+                    offset_en_bloque = 0;
                     sb.used_blocks++;
                     break;
                 }
@@ -374,42 +421,68 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
 
         if (elegido == -1) return -ENOSPC;
 
-        // Leer contenido actual del bloque
+        int bytes_a_escribir = BLOCK_SIZE - offset_en_bloque;
+        if (bytes_a_escribir > (int)(size - total_written))
+            bytes_a_escribir = size - total_written;
+
+        // Leer bloque actual
         uint8_t tmp[BLOCK_SIZE];
         char pathb[256];
         snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, elegido);
         read_struct_from_png(pathb, tmp, BLOCK_SIZE);
 
-        int offset_bloque = used_bytes[elegido];
-        int bytes_a_copiar = BLOCK_SIZE - offset_bloque;
-        if (bytes_a_copiar > espacio_necesario) bytes_a_copiar = espacio_necesario;
-
-        memcpy(tmp + offset_bloque, buf + total_written, bytes_a_copiar);
+        memcpy(tmp + offset_en_bloque, buf + total_written, bytes_a_escribir);
         write_struct_to_png(pathb, tmp, BLOCK_SIZE);
 
-        // Registrar en inodo
-        inodo->block_pointers[i] = elegido;
-        inodo->block_offsets[i] = offset_bloque;
-        used_bytes[elegido] += bytes_a_copiar;
+        int slot = -1;
+        for (int j = 0; j < 30; j++) {
+            if (inodo->block_pointers[j] == 0) {
+                slot = j;
+                break;
+            }
+        }
+        if (slot == -1) return -ENOSPC;
 
-        total_written += bytes_a_copiar;
+        inodo->block_pointers[slot] = elegido;
+        inodo->block_offsets[slot] = offset_en_bloque;
+        inodo->fragment_order[slot] = inodo->size + total_written;  // usar offset lógico
+
+
+        // Imprimir debug
+        printf("[write] Escribiendo %zu bytes en bloque %d, offset %d\n",
+               bytes_a_escribir, elegido, offset_en_bloque);
+
+        // Registrar región en el bloque
+        for (int r = 0; r < MAX_REGIONES; r++) {
+            if (regiones_bloque[elegido][r].size == 0) {
+                regiones_bloque[elegido][r].inodo_id = inodo_idx;
+                regiones_bloque[elegido][r].offset = offset_en_bloque;
+                regiones_bloque[elegido][r].size = bytes_a_escribir;
+                break;
+            }
+        }
+
+        if (used_bytes[elegido] < offset_en_bloque + bytes_a_escribir)
+            used_bytes[elegido] = offset_en_bloque + bytes_a_escribir;
+
+        total_written += bytes_a_escribir;
     }
 
     if ((size_t)(offset + total_written) > (size_t)inodo->size)
         inodo->size = offset + total_written;
 
-    // Persistir cambios
+    // Persistencia
     char pathi[256], pathbm[256];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
     write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
 
+    printf("Escribí %zu de %zu bytes\n", total_written, size);
     return total_written;
 }
 
-static int fs_read(const char *path, char *buf, size_t size, off_t offset,
-    struct fuse_file_info *fi) {
+static int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
 
     int idx = buscar_inodo_por_ruta(path);
@@ -424,26 +497,66 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset,
     size_t total_read = 0;
     size_t logical_offset = offset;
 
-    for (int i = 0; i < 8 && total_read < bytes_to_read; i++) {
-        int block_id = inodos[idx].block_pointers[i];
-        int block_offset = inodos[idx].block_offsets[i];
-        if (block_id == 0) break;
+    // Preparar estructura auxiliar para ordenar los fragmentos
+    typedef struct {
+        int block_id;
+        int offset;
+        int length;
+        int order;
+    } Fragment;
 
-        if (logical_offset >= BLOCK_SIZE) {
-            logical_offset -= BLOCK_SIZE;
+    Fragment frags[30];
+    int frag_count = 0;
+
+    for (int i = 0; i < 30; i++) {
+        if (inodos[idx].block_pointers[i] == 0) continue;
+
+        int blk = inodos[idx].block_pointers[i];
+        int off = inodos[idx].block_offsets[i];
+        int len = 0;
+
+        // Buscar en regiones_bloque la longitud real del fragmento
+        for (int r = 0; r < MAX_REGIONES; r++) {
+            if (regiones_bloque[blk][r].inodo_id == idx && regiones_bloque[blk][r].offset == off) {
+                len = regiones_bloque[blk][r].size;
+                break;
+            }
+        }
+
+        frags[frag_count].block_id = blk;
+        frags[frag_count].offset = off;
+        frags[frag_count].length = len;
+        frags[frag_count].order = inodos[idx].fragment_order[i];
+        frag_count++;
+    }
+
+    // Ordenar por orden lógico
+    for (int i = 0; i < frag_count - 1; i++) {
+        for (int j = i + 1; j < frag_count; j++) {
+            if (frags[i].order > frags[j].order) {
+                Fragment tmp = frags[i];
+                frags[i] = frags[j];
+                frags[j] = tmp;
+            }
+        }
+    }
+
+    // Leer secuencialmente cada fragmento
+    for (int i = 0; i < frag_count && total_read < bytes_to_read; i++) {
+        if (logical_offset >= (size_t)frags[i].length) {
+            logical_offset -= frags[i].length;
             continue;
         }
 
         uint8_t temp_block[BLOCK_SIZE];
-        read_data_block(block_id, temp_block, BLOCK_SIZE);
+        read_data_block(frags[i].block_id, temp_block, BLOCK_SIZE);
 
-        size_t read_offset = block_offset + logical_offset;
-        size_t available = BLOCK_SIZE - read_offset;
-        size_t to_copy = bytes_to_read - total_read;
-        if (to_copy > available)
-            to_copy = available;
+        size_t read_start = frags[i].offset + logical_offset;
+        size_t available = frags[i].length - logical_offset;
+        size_t to_copy = (bytes_to_read - total_read < available)
+                            ? (bytes_to_read - total_read) : available;
 
-        memcpy(buf + total_read, temp_block + read_offset, to_copy);
+        memcpy(buf + total_read, temp_block + read_start, to_copy);
         total_read += to_copy;
         logical_offset = 0;
     }
@@ -471,7 +584,7 @@ static int fs_unlink(const char *path) {
         return -EISDIR;  // No se puede eliminar directorios con unlink
 
     // Liberar bloques de datos
-    for (int j = 0; j < 8; j++) {
+    for (int j = 0; j < 30; j++) {
         int b = inodos[idx].block_pointers[j];
         used_bytes[b] = 0;
         if (b > 0) bitmap[b] = 0;
@@ -739,4 +852,89 @@ static off_t fs_lseek(const char *path, off_t off, int whence, struct fuse_file_
         return -EINVAL;
 
     return result;
+}
+
+static int fs_truncate(const char *path, off_t size) {
+    int inodo_idx = buscar_inodo_por_ruta(path);
+    if (inodo_idx < 0 || inodos[inodo_idx].is_dir) return -ENOENT;
+
+    Inode *inodo = &inodos[inodo_idx];
+
+    if (size == 0) {
+        // Eliminar todas las regiones de este inodo
+        for (int b = 0; b < sb.total_blocks; b++) {
+            for (int r = 0; r < MAX_REGIONES; r++) {
+                if (regiones_bloque[b][r].inodo_id == inodo_idx) {
+                    regiones_bloque[b][r].inodo_id = -1;
+                    regiones_bloque[b][r].size = 0;
+                }
+            }
+        }
+        memset(inodo->block_pointers, 0, sizeof(inodo->block_pointers));
+        memset(inodo->block_offsets, 0, sizeof(inodo->block_offsets));
+        memset(inodo->fragment_order, 0, sizeof(inodo->fragment_order));
+        inodo->size = 0;
+    } else if (size < inodo->size) {
+        // Recortar el archivo
+        size_t remaining = size;
+        for (int i = 0; i < 30; i++) {
+            if (inodo->block_pointers[i] == 0) continue;
+
+            int block_id = inodo->block_pointers[i];
+            int offset_bloque = inodo->block_offsets[i];
+            int bytes_in_frag = 0;
+
+            // Buscar la región correspondiente para este inodo y fragmento
+            for (int r = 0; r < MAX_REGIONES; r++) {
+                if (regiones_bloque[block_id][r].inodo_id == inodo_idx &&
+                    regiones_bloque[block_id][r].offset == offset_bloque) {
+                    bytes_in_frag = regiones_bloque[block_id][r].size;
+
+                    if (remaining >= bytes_in_frag) {
+                        remaining -= bytes_in_frag;
+                    } else {
+                        // Truncar dentro de este fragmento
+                        regiones_bloque[block_id][r].size = remaining;
+                        used_bytes[block_id] = offset_bloque + remaining;
+                        remaining = 0;
+                    }
+                    if (remaining == 0) {
+                        // Eliminar fragmentos posteriores
+                        for (int j = i + 1; j < 30; j++) {
+                            int b2 = inodo->block_pointers[j];
+                            int off2 = inodo->block_offsets[j];
+                            for (int r2 = 0; r2 < MAX_REGIONES; r2++) {
+                                if (regiones_bloque[b2][r2].inodo_id == inodo_idx &&
+                                    regiones_bloque[b2][r2].offset == off2) {
+                                    regiones_bloque[b2][r2].inodo_id = -1;
+                                    regiones_bloque[b2][r2].size = 0;
+                                }
+                            }
+                            inodo->block_pointers[j] = 0;
+                            inodo->block_offsets[j] = 0;
+                            inodo->fragment_order[j] = 0;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        inodo->size = size;
+    } else if ((size_t)size > inodo->size) {
+        // Expandir con ceros
+        size_t to_fill = size - inodo->size;
+        char *zero_buffer = calloc(to_fill, 1);  // \0-filled
+        if (!zero_buffer) return -ENOMEM;
+        fs_write(path, zero_buffer, to_fill, inodo->size, NULL);
+        free(zero_buffer);
+    }
+
+    // Guardar cambios
+    char pathi[256], pathbm[256];
+    snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+    snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
+    write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+    write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
+
+    return 0;
 }

@@ -5,7 +5,7 @@
 #include <string.h>
 #include "../include/bwfs.h"
 
-#define BLOCK_SIZE 1024
+#define BLOCK_SIZE 125000
 
 extern Superblock sb;
 extern Inode inodos[MAX_FILES];

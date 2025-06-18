@@ -16,6 +16,7 @@ extern Superblock sb;
 extern Inode inodos[MAX_FILES];
 extern uint8_t bitmap[MAX_BLOCKS];
 
+/*
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Uso: %s <carpeta_fs>\n", argv[0]);
@@ -43,7 +44,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used) continue;
 
-        for (int j = 0; j < 8; j++) {
+        for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
             int b = inodos[i].block_pointers[j];
             if (b > 0) {
                 bloques_usados[b]++;
@@ -55,7 +56,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (inodos[i].parent_inode < -1 || inodos[i].parent_inode >= MAX_FILES) {
+        if ((inodos[i].parent_inode < -1 || inodos[i].parent_inode >= MAX_FILES) && i > 0) {
             printf("❌ Inodo %d tiene parent_inode inválido (%d).\n", i, inodos[i].parent_inode);
             errores++;
         }
@@ -92,8 +93,8 @@ int main(int argc, char *argv[]) {
 
     return errores ? 1 : 0;
 }
+*/
 
-/*
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Uso: %s <carpeta_fs>\n", argv[0]);
@@ -119,7 +120,7 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used) continue;
 
-        for (int j = 0; j < 8; j++) {
+        for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
             int b = inodos[i].block_pointers[j];
             if (b > 0) {
                 bloques_usados[b]++;
@@ -131,7 +132,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (inodos[i].parent_inode < -1 || inodos[i].parent_inode >= MAX_FILES) {
+        if ((inodos[i].parent_inode < -1 || inodos[i].parent_inode >= MAX_FILES) && i > 0) {
             printf("❌ Inodo %d tiene parent_inode inválido (%d).\n", i, inodos[i].parent_inode);
             errores++;
         }
@@ -186,5 +187,3 @@ int main(int argc, char *argv[]) {
 
     return errores ? 1 : 0;
 }
-*/
-

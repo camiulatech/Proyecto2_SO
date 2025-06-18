@@ -20,7 +20,7 @@ uint8_t bitmap[MAX_BLOCKS];
 uint16_t used_bytes[MAX_BLOCKS];
 
 // Máximo de regiones por bloque compartido
-#define MAX_REGIONES 64
+#define MAX_REGIONES MAX_BLOCKS_PER_FILE
 
 typedef struct {
 int inodo_id; // Índice del inodo que usa esta región
@@ -33,7 +33,7 @@ RegionUso regiones_bloque[MAX_BLOCKS][MAX_REGIONES];
 
 // --------------------- FUNCIONES AUXILIARES -------------------------
 void cargar_metadatos() {
-    char path[256];
+    char path[1000];
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
     read_struct_from_png(path, (uint8_t*)&sb, sizeof(Superblock));
 
@@ -308,10 +308,34 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 
     // Verificar si ya existe en ese directorio
     for (int i = 0; i < MAX_FILES; i++) {
-        if (inodos[i].used && strcmp(inodos[i].name, nombre) == 0 && inodos[i].parent_inode == padre_idx)
-            return -EEXIST;
+        if (inodos[i].used && strcmp(inodos[i].name, nombre) == 0 && inodos[i].parent_inode == padre_idx) {
+            // Sobrescribir: limpiar contenido
+            inodos[i].size = 0;
+            memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
+            memset(inodos[i].block_offsets, 0, sizeof(inodos[i].block_offsets));
+            memset(inodos[i].fragment_order, 0, sizeof(inodos[i].fragment_order));
+
+            // Limpiar las regiones asignadas en bloques
+            for (int b = 0; b < sb.total_blocks; b++) {
+                for (int r = 0; r < MAX_REGIONES; r++) {
+                    if (regiones_bloque[b][r].inodo_id == i) {
+                        regiones_bloque[b][r].inodo_id = -1;
+                        regiones_bloque[b][r].offset = 0;
+                        regiones_bloque[b][r].size = 0;
+                    }
+                }
+            }
+
+            // Guardar cambios
+            char pathi[256];
+            snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
+            write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+
+            return 0;
+        }
     }
 
+    // Si no existe, crearlo normalmente
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used) {
             inodos[i].used = 1;
@@ -319,7 +343,9 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
             inodos[i].parent_inode = padre_idx;
             strncpy(inodos[i].name, nombre, sizeof(inodos[i].name) - 1);
             inodos[i].size = 0;
+            memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
             memset(inodos[i].block_offsets, 0, sizeof(inodos[i].block_offsets));
+            memset(inodos[i].fragment_order, 0, sizeof(inodos[i].fragment_order));
 
             char pathi[256];
             snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
@@ -573,33 +599,43 @@ static int fs_open(const char *path, struct fuse_file_info *fi) {
 
 static int fs_unlink(const char *path) {
     int idx = buscar_inodo_por_ruta(path);
-    if (idx < 0)
-        return -ENOENT;
+    if (idx < 0 || inodos[idx].is_dir) return -ENOENT;
 
-    if (inodos[idx].is_dir)
-        return -EISDIR;  // No se puede eliminar directorios con unlink
-
-    // Liberar bloques de datos
-    for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
-        int b = inodos[idx].block_pointers[j];
-        used_bytes[b] = 0;
-        if (b > 0) bitmap[b] = 0;
+    // Limpiar regiones
+    for (int b = 0; b < sb.total_blocks; b++) {
+        for (int r = 0; r < MAX_REGIONES; r++) {
+            if (regiones_bloque[b][r].inodo_id == idx) {
+                regiones_bloque[b][r].inodo_id = -1;
+                regiones_bloque[b][r].size = 0;
+                regiones_bloque[b][r].offset = 0;
+            }
+        }
     }
 
-    // Limpiar inodo
-    inodos[idx].used = 0;
-    memset(inodos[idx].name, 0, sizeof(inodos[idx].name));
-    memset(inodos[idx].block_pointers, 0, sizeof(inodos[idx].block_pointers));
-    inodos[idx].size = 0;
-    inodos[idx].is_dir = 0;
-    inodos[idx].parent_inode = -1;
+    // Liberar bloques si ya no están en uso
+    for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
+        int blk = inodos[idx].block_pointers[j];
+        if (blk > 2 && blk < sb.total_blocks) {
+            bool en_uso = false;
+            for (int x = 0; x < MAX_REGIONES; x++) {
+                if (regiones_bloque[blk][x].size > 0) {
+                    en_uso = true;
+                    break;
+                }
+            }
+            if (!en_uso) {
+                bitmap[blk] = 0;
+                used_bytes[blk] = 0;
+            }
+        }
+    }
 
-    // Guardar cambios
-    char pathi[256], pathbm[256];
+    inodos[idx].used = 0;
+
+    // Persistir cambios
+    char pathi[256];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
-    snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
-    write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
 
     return 0;
 }
@@ -691,12 +727,10 @@ static int fs_opendir(const char *path, struct fuse_file_info *fi) {
 static int fs_rename(const char *from, const char *to, unsigned int flags) {
     (void)flags;
 
-    // Obtener inodo original
     int origen_idx = buscar_inodo_por_ruta(from);
     if (origen_idx < 0)
         return -ENOENT;
 
-    // Preparar nuevas partes
     char copia1[256], copia2[256];
     strncpy(copia1, to, sizeof(copia1));
     strncpy(copia2, to, sizeof(copia2));
@@ -707,18 +741,50 @@ static int fs_rename(const char *from, const char *to, unsigned int flags) {
     char *nuevo_padre_path = dirname(copia2);
     int nuevo_padre_idx = buscar_inodo_por_ruta(nuevo_padre_path);
 
-    if (nuevo_padre_idx < -1 || (nuevo_padre_idx >= 0 && !inodos[nuevo_padre_idx].is_dir))
+    if (nuevo_padre_idx < 0 || !inodos[nuevo_padre_idx].is_dir)
         return -ENOENT;
 
-    // Verificar que no exista ya un archivo con el mismo nombre en el nuevo lugar
+    // Buscar si ya existe destino y eliminarlo si se permite sobrescribir
     for (int i = 0; i < MAX_FILES; i++) {
         if (inodos[i].used &&
             strcmp(inodos[i].name, nuevo_nombre) == 0 &&
-            inodos[i].parent_inode == nuevo_padre_idx)
-            return -EEXIST;
+            inodos[i].parent_inode == nuevo_padre_idx) {
+
+            // Limpiar regiones usadas por el inodo existente
+            for (int b = 0; b < sb.total_blocks; b++) {
+                for (int r = 0; r < MAX_REGIONES; r++) {
+                    if (regiones_bloque[b][r].inodo_id == i) {
+                        regiones_bloque[b][r].inodo_id = -1;
+                        regiones_bloque[b][r].offset = 0;
+                        regiones_bloque[b][r].size = 0;
+                    }
+                }
+            }
+
+            // Limpiar bitmap si corresponde
+            for (int j = 0; j < 30; j++) {
+                int blk = inodos[i].block_pointers[j];
+                if (blk > 2 && blk < sb.total_blocks) {
+                    bool en_uso = false;
+                    for (int x = 0; x < MAX_REGIONES; x++) {
+                        if (regiones_bloque[blk][x].size > 0) {
+                            en_uso = true;
+                            break;
+                        }
+                    }
+                    if (!en_uso) {
+                        bitmap[blk] = 0;
+                        used_bytes[blk] = 0;
+                    }
+                }
+            }
+
+            inodos[i].used = 0;
+            break;
+        }
     }
 
-    // Actualizar el inodo
+    // Actualizar el inodo original con nuevo nombre y padre
     strncpy(inodos[origen_idx].name, nuevo_nombre, sizeof(inodos[origen_idx].name) - 1);
     inodos[origen_idx].parent_inode = nuevo_padre_idx;
 
@@ -726,6 +792,11 @@ static int fs_rename(const char *from, const char *to, unsigned int flags) {
     char pathi[256];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
+
+    // Guardar bitmap actualizado si hubo cambios
+    char pathbm[256];
+    snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
+    write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
 
     return 0;
 }

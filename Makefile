@@ -24,16 +24,16 @@ DEFRAG_BIN = bwdefrag
 all: $(MKFS_BIN) $(MOUNT_BIN) $(FSCK_BIN) $(DEFRAG_BIN)
 
 # mkfs.bwfs
-$(MKFS_BIN): $(MKFS_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(MKFS_LD)
+$(MKFS_BIN): $(MKFS_SRC) $(BWFS_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(MKFS_LD)
 
 # mount.bwfs
 $(MOUNT_BIN): $(MOUNT_SRC) $(BWFS_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ $(MNT_LD)
 
 # fsck.bwfs
-$(FSCK_BIN): $(FSCK_SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(FSCK_LD)
+$(FSCK_BIN): $(FSCK_SRC) $(BWFS_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(MKFS_LD)
 
 # bwdefrag
 $(DEFRAG_BIN): $(DEFRAG_SRC) $(BWFS_SRC)

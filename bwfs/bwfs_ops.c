@@ -32,10 +32,6 @@ int size; // Tamaño ocupado
 RegionUso regiones_bloque[MAX_BLOCKS][MAX_REGIONES];
 
 // --------------------- FUNCIONES AUXILIARES -------------------------
-void read_struct_from_png(const char *filename, uint8_t *buffer, size_t size);
-void write_struct_to_png(const char *filename, const uint8_t *data, size_t size);
-void read_data_block(int block_id, uint8_t *buffer, size_t size);
-
 void cargar_metadatos() {
     char path[256];
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
@@ -59,7 +55,7 @@ void cargar_metadatos() {
 
         int size_restante = inodos[i].size;
 
-        for (int j = 0; j < 30 && size_restante > 0; j++) {
+        for (int j = 0; j < MAX_BLOCKS_PER_FILE && size_restante > 0; j++) {
             int block_id = inodos[i].block_pointers[j];
             int offset   = inodos[i].block_offsets[j];
 
@@ -383,7 +379,7 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
     size_t total_written = 0;
     int fragment_count = 0;
 
-    for (int i = 0; i < 30 && total_written < size; i++) {
+    for (int i = 0; i < MAX_BLOCKS_PER_FILE && total_written < size; i++) {
         int elegido = -1;
         int offset_en_bloque = -1;
 
@@ -435,7 +431,7 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
         write_struct_to_png(pathb, tmp, BLOCK_SIZE);
 
         int slot = -1;
-        for (int j = 0; j < 30; j++) {
+        for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
             if (inodo->block_pointers[j] == 0) {
                 slot = j;
                 break;
@@ -505,10 +501,10 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
         int order;
     } Fragment;
 
-    Fragment frags[30];
+    Fragment frags[MAX_BLOCKS_PER_FILE];
     int frag_count = 0;
 
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < MAX_BLOCKS_PER_FILE; i++) {
         if (inodos[idx].block_pointers[i] == 0) continue;
 
         int blk = inodos[idx].block_pointers[i];
@@ -584,7 +580,7 @@ static int fs_unlink(const char *path) {
         return -EISDIR;  // No se puede eliminar directorios con unlink
 
     // Liberar bloques de datos
-    for (int j = 0; j < 30; j++) {
+    for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
         int b = inodos[idx].block_pointers[j];
         used_bytes[b] = 0;
         if (b > 0) bitmap[b] = 0;
@@ -877,7 +873,7 @@ static int fs_truncate(const char *path, off_t size) {
     } else if (size < inodo->size) {
         // Recortar el archivo
         size_t remaining = size;
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < MAX_BLOCKS_PER_FILE; i++) {
             if (inodo->block_pointers[i] == 0) continue;
 
             int block_id = inodo->block_pointers[i];
@@ -900,7 +896,7 @@ static int fs_truncate(const char *path, off_t size) {
                     }
                     if (remaining == 0) {
                         // Eliminar fragmentos posteriores
-                        for (int j = i + 1; j < 30; j++) {
+                        for (int j = i + 1; j < MAX_BLOCKS_PER_FILE; j++) {
                             int b2 = inodo->block_pointers[j];
                             int off2 = inodo->block_offsets[j];
                             for (int r2 = 0; r2 < MAX_REGIONES; r2++) {

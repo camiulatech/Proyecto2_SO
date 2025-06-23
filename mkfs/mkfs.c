@@ -20,41 +20,65 @@
 #define USABLE_BLOCKS ((FS_SIZE_BYTES + BYTES_PER_BLOCK - 1) / BYTES_PER_BLOCK)
 #define TOTAL_BLOCKS (USABLE_BLOCKS + 3)  // +3 para metadatos
 
-// Crea un bloque de datos completamente blanco
+// Crea un bloque de datos completamente blanco como imagen PNG en escala de grises
 void create_blank_png(const char *filename) {
+    // Abrir archivo para escritura binaria
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
         perror("Error creando PNG");
-        exit(1);
+        exit(1);  // Terminar si no se puede abrir el archivo
     }
 
+    // Crear estructuras de escritura de PNG
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     png_infop info_ptr = png_create_info_struct(png_ptr);
+
+    // Verificar si se creó correctamente
     if (!png_ptr || !info_ptr) {
         fprintf(stderr, "Error inicializando libpng\n");
         exit(1);
     }
 
+    // Manejo de errores con setjmp/longjmp (requerido por libpng)
     if (setjmp(png_jmpbuf(png_ptr))) {
         fprintf(stderr, "Error escribiendo PNG\n");
         exit(1);
     }
 
+    // Inicializar escritura con el archivo abierto
     png_init_io(png_ptr, fp);
+
+    // Configurar cabecera del PNG:
+    // - IMG_WIDTH x IMG_HEIGHT
+    // - Profundidad de 8 bits
+    // - Imagen en escala de grises (PNG_COLOR_TYPE_GRAY)
     png_set_IHDR(png_ptr, info_ptr, IMG_WIDTH, IMG_HEIGHT,
                  8, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+    // Escribir cabecera al archivo
     png_write_info(png_ptr, info_ptr);
 
+    // Reservar memoria para una fila de píxeles
     png_bytep row = malloc(IMG_WIDTH);
+
+    // Rellenar la fila con valor 255 (blanco en escala de grises)
     memset(row, 255, IMG_WIDTH);
 
+    // Escribir cada fila de la imagen (todas iguales, completamente blancas)
     for (int y = 0; y < IMG_HEIGHT; y++)
         png_write_row(png_ptr, row);
 
+    // Liberar memoria de la fila
     free(row);
+
+    // Finalizar la escritura del archivo PNG
     png_write_end(png_ptr, NULL);
+
+    // Liberar estructuras de libpng
     png_destroy_write_struct(&png_ptr, &info_ptr);
+
+    // Cerrar archivo
     fclose(fp);
 }
 

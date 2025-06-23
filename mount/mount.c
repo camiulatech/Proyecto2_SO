@@ -7,8 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-
-#include "../include/bwfs_ops.h"   // ya incluye "bwfs.h"
+#include "../include/bwfs_ops.h"
 
 /* ──────────────────────── main ──────────────────────── */
 int main(int argc, char *argv[])
@@ -31,7 +30,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    cargar_metadatos();
+    load_metadata();
 
     /* Lanza FUSE en foreground (-f) */
     char *fuse_args[] = { argv[0], "-f", argv[2] };

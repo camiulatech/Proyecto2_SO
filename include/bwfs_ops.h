@@ -4,6 +4,7 @@
 #include <fuse3/fuse.h>
 #include "bwfs.h"
 
+// Estructuras globales
 extern struct fuse_operations fs_oper;
 extern char mount_folder[256];
 extern Superblock sb;

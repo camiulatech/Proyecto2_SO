@@ -34,6 +34,7 @@ UsedRegion regions_blocks[MAX_BLOCKS][MAX_REGIONES];
 // --------------------- FUNCIONES AUXILIARES -------------------------
 void load_metadata() {
     char path[1000];
+    // Leer superbloque, inodos y bitmap desde PNGs
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
     read_struct_from_png(path, (uint8_t*)&sb, sizeof(Superblock));
 
@@ -126,67 +127,191 @@ struct fuse_operations fs_oper = {
     .open = fs_open,
 };
 
-void read_struct_from_png(const char *filename, uint8_t *buffer, size_t size) {
+void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_size_bytes) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
-        perror("fopen");
+        perror("Error abriendo PNG para lectura");
         exit(1);
     }
+
     png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) {
+        fprintf(stderr, "Error creando png_structp para lectura\n");
+        fclose(fp);
+        exit(1);
+    }
+
     png_infop info_ptr = png_create_info_struct(png_ptr);
-    if (!png_ptr || !info_ptr) exit(1);
-    if (setjmp(png_jmpbuf(png_ptr))) exit(1);
+    if (!info_ptr) {
+        fprintf(stderr, "Error creando png_infop para lectura\n");
+        png_destroy_read_struct(&png_ptr, NULL, NULL);
+        fclose(fp);
+        exit(1);
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        fprintf(stderr, "Error leyendo PNG\n");
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        exit(1);
+    }
 
     png_init_io(png_ptr, fp);
     png_read_info(png_ptr, info_ptr);
 
-    png_bytep row = malloc(1000);
-    memset(buffer, 0, size);
-    size_t bit_index = 0;
+    png_uint_32 width, height;
+    int bit_depth, color_type;
+    png_get_IHDR(png_ptr, info_ptr, &width, &height, &bit_depth, &color_type,
+                 NULL, NULL, NULL);
+
+    if (width != 1000 || height != 1000 ||
+        bit_depth != 1 || color_type != PNG_COLOR_TYPE_GRAY) {
+        fprintf(stderr, "Error: La imagen PNG no es de %dx%d, 1 bit en escala de grises. "
+                        "Dimensiones: %ux%u, Profundidad: %d, Tipo Color: %d\n",
+                        1000, 1000, width, height, bit_depth, color_type);
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        exit(1);
+    }
+
+    size_t row_bytes = (1000 + 7) / 8;
+    png_bytep row = (png_bytep) malloc(row_bytes);
+    if (!row) {
+        fprintf(stderr, "Error: No se pudo asignar memoria para la fila.\n");
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        exit(1);
+    }
+
+    memset(buffer, 0, buffer_size_bytes);
+    size_t output_bit_index = 0;
+
     for (int y = 0; y < 1000; y++) {
         png_read_row(png_ptr, row, NULL);
-        for (int x = 0; x < 1000 && bit_index < size * 8; x++) {
-            uint8_t bit = (row[x] < 128) ? 1 : 0;
-            buffer[bit_index / 8] |= (bit << (7 - (bit_index % 8)));
-            bit_index++;
+
+        for (int i = 0; i < row_bytes; i++) {
+            uint8_t current_byte_from_png = row[i];
+
+            for (int bit_in_byte = 0; bit_in_byte < 8; bit_in_byte++) {
+                if (output_bit_index >= buffer_size_bytes * 8) {
+                    break;
+                }
+
+                uint8_t pixel_bit_from_png = (current_byte_from_png >> (7 - bit_in_byte)) & 1;
+
+                // *****************************************************************
+                // CAMBIO CLAVE AQUÍ: Invertir la lógica de mapeo
+                // write: 1 (input_data) -> 0 (PNG_bit) (Blanco)
+                //        0 (input_data) -> 1 (PNG_bit) (Negro)
+                //
+                // read:  0 (PNG_bit) -> 1 (output_buffer) (Blanco)
+                //        1 (PNG_bit) -> 0 (output_buffer) (Negro)
+                //
+                // Esto se logra con un simple NOT bit a bit, o (1 - pixel_bit_from_png)
+                uint8_t mapped_output_bit = (pixel_bit_from_png == 0) ? 1 : 0; // Si PNG es BLANCO (0), output es 1. Si PNG es NEGRO (1), output es 0.
+
+                // O de forma más concisa:
+                // uint8_t mapped_output_bit = !pixel_bit_from_png;
+
+                // Almacenar el bit en el buffer de salida
+                if (mapped_output_bit == 1) { // Si el bit de salida mapeado es 1, establecerlo en el buffer
+                    buffer[output_bit_index / 8] |= (1 << (7 - (output_bit_index % 8)));
+                }
+                // Si mapped_output_bit es 0, no hacemos nada, ya que el buffer se inicializó a 0.
+                // *****************************************************************
+
+                output_bit_index++;
+            }
+            if (output_bit_index >= buffer_size_bytes * 8) break;
         }
     }
+
     free(row);
     png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
     fclose(fp);
 }
 
-void write_struct_to_png(const char *filename, const uint8_t *data, size_t size) {
+void write_struct_to_png(const char *filename, const uint8_t *data, size_t data_size_bytes) {
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
-        perror("fopen");
+        perror("Error abriendo archivo para escritura");
         exit(1);
     }
+
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) {
+        fprintf(stderr, "Error creando png_structp para escritura\n");
+        fclose(fp);
+        exit(1);
+    }
+
     png_infop info_ptr = png_create_info_struct(png_ptr);
-    if (!png_ptr || !info_ptr) exit(1);
-    if (setjmp(png_jmpbuf(png_ptr))) exit(1);
+    if (!info_ptr) {
+        fprintf(stderr, "Error creando png_infop para escritura\n");
+        png_destroy_write_struct(&png_ptr, NULL); // El segundo parámetro debe ser NULL si info_ptr no se creó
+        fclose(fp);
+        exit(1);
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        fprintf(stderr, "Error escribiendo PNG\n");
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(fp);
+        exit(1);
+    }
 
     png_init_io(png_ptr, fp);
-    png_set_IHDR(png_ptr, info_ptr, 1000, 1000, 8, PNG_COLOR_TYPE_GRAY,
-                 PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+    png_set_IHDR(png_ptr, info_ptr, 1000, 1000,
+                 1, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+    png_set_compression_level(png_ptr, 0);
+
     png_write_info(png_ptr, info_ptr);
 
-    png_bytep row = malloc(1000);
-    size_t bit_index = 0;
+    size_t row_bytes = (1000 + 7) / 8;
+    png_bytep row = (png_bytep)malloc(row_bytes);
+    if (!row) {
+        fprintf(stderr, "Error: No se pudo asignar memoria para la fila.\n");
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+        fclose(fp);
+        exit(1);
+    }
+
+    size_t data_bit_index = 0;
+
     for (int y = 0; y < 1000; y++) {
+        // *****************************************************************
+        // CAMBIO CLAVE AQUÍ: Inicializar la fila a NEGRO (todos los bits a 1)
+        memset(row, 0xFF, row_bytes); // Rellenar con unos (para que los píxeles sean NEGROS por defecto)
+        // *****************************************************************
+
         for (int x = 0; x < 1000; x++) {
-            if (bit_index < size * 8) {
-                uint8_t byte = data[bit_index / 8];
-                uint8_t bit = (byte >> (7 - (bit_index % 8))) & 1;
-                row[x] = bit ? 0x00 : 0xFF;
+            if (data_bit_index < data_size_bytes * 8) {
+                uint8_t byte_from_data = data[data_bit_index / 8];
+                uint8_t input_bit = (byte_from_data >> (7 - (data_bit_index % 8))) & 1;
+
+                // *****************************************************************
+                // CAMBIO DE LÓGICA AQUÍ:
+                // Si el bit de entrada es 1, queremos BLANCO (PNG bit 0).
+                // Si el bit de entrada es 0, queremos NEGRO (PNG bit 1, que ya está por defecto).
+                if (input_bit == 1) { // Si el bit de entrada es 1 (queremos BLANCO)
+                    // Limpiar el bit correspondiente a 0 en el byte de la fila del PNG
+                    // Esto cambia el bit de 1 (negro) a 0 (blanco)
+                    row[x / 8] &= ~(1 << (7 - (x % 8)));
+                }
+                // Si input_bit es 0, el píxel permanece 1 (negro), que es el valor predeterminado.
+                // *****************************************************************
             } else {
-                row[x] = 0xFF;
+                // Si ya no hay más 'data' de entrada, los píxeles restantes se mantendrán
+                // en NEGRO (bits 1) gracias al memset inicial con 0xFF.
             }
-            bit_index++;
+            data_bit_index++;
         }
         png_write_row(png_ptr, row);
     }
+
     free(row);
     png_write_end(png_ptr, NULL);
     png_destroy_write_struct(&png_ptr, &info_ptr);

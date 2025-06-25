@@ -22,52 +22,75 @@
 
 // Crea un bloque de datos completamente blanco como imagen PNG en escala de grises
 void create_blank_png(const char *filename) {
+    // Abre el archivo en modo binario para escritura
     FILE *fp = fopen(filename, "wb");
     if (!fp) {
+        // Si no se pudo abrir el archivo, se muestra el error y se termina
         perror("Error creando PNG");
         exit(1);
     }
 
+    // Crea la estructura principal de escritura PNG (libpng)
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    // Crea la estructura de información del PNG
     png_infop info_ptr = png_create_info_struct(png_ptr);
 
+    // Verifica que ambas estructuras se hayan creado correctamente
     if (!png_ptr || !info_ptr) {
         fprintf(stderr, "Error inicializando libpng\n");
         exit(1);
     }
 
+    // Configura el manejador de errores de libpng
     if (setjmp(png_jmpbuf(png_ptr))) {
+        // Si ocurre un error al escribir el PNG, se limpia y se cierra el archivo
         fprintf(stderr, "Error escribiendo PNG\n");
         png_destroy_write_struct(&png_ptr, &info_ptr);
         fclose(fp);
         exit(1);
     }
 
+    // Inicializa libpng con el archivo de salida
     png_init_io(png_ptr, fp);
 
+    // Define los parámetros del encabezado del PNG:
+    // - IMG_WIDTH x IMG_HEIGHT: dimensiones de la imagen (en píxeles)
+    // - 1 bit por píxel (blanco o negro)
+    // - Escala de grises (sin color)
+    // - Sin entrelazado ni filtros especiales
     png_set_IHDR(png_ptr, info_ptr, IMG_WIDTH, IMG_HEIGHT,
                  1, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
 
+    // Desactiva la compresión para que la imagen sea escrita de forma simple
     png_set_compression_level(png_ptr, 0);
 
+    // Escribe la cabecera del archivo PNG
     png_write_info(png_ptr, info_ptr);
 
+    // Calcula la cantidad de bytes por fila (redondeando bits a bytes)
     size_t row_bytes = (IMG_WIDTH + 7) / 8;
+
+    // Reserva memoria para una fila de la imagen
     png_bytep row = (png_bytep)malloc(row_bytes);
 
-    // **********************************************
-    // CORRECCIÓN AQUÍ: Para BLANCO en 1-bit grayscale, usa 0x00
-    // Si quisieras NEGRO, usarías 0xFF
-    memset(row, 0xFF, row_bytes); // Rellenar con unos (para píxeles blancos)
-    // **********************************************
+    // Llena la fila con 0xFF (todos los bits en 1 = blanco en 1-bit grayscale)
+    memset(row, 0xFF, row_bytes);
 
+    // Escribe todas las filas (todas son iguales) para crear una imagen blanca
     for (int y = 0; y < IMG_HEIGHT; y++)
         png_write_row(png_ptr, row);
 
+    // Libera memoria de la fila
     free(row);
+
+    // Finaliza la escritura del PNG
     png_write_end(png_ptr, NULL);
+
+    // Libera las estructuras de libpng
     png_destroy_write_struct(&png_ptr, &info_ptr);
+
+    // Cierra el archivo
     fclose(fp);
 }
 

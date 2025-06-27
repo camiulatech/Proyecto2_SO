@@ -15,7 +15,7 @@
 // --------------------- GLOBALS -------------------------
 Superblock sb;
 Inode inodos[MAX_FILES];
-char mount_folder[256];
+char mount_folder[1000];
 uint8_t bitmap[MAX_BLOCKS];
 uint16_t used_bytes[MAX_BLOCKS];
 
@@ -32,8 +32,11 @@ int size; // Tamaño ocupado
 UsedRegion regions_blocks[MAX_BLOCKS][MAX_REGIONES];
 
 // --------------------- FUNCIONES AUXILIARES -------------------------
+
+// Carga los metadatos del sistema de archivos desde los PNGs
 void load_metadata() {
     char path[1000];
+
     // Leer superbloque, inodos y bitmap desde PNGs
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
     read_struct_from_png(path, (uint8_t*)&sb, sizeof(Superblock));
@@ -50,7 +53,7 @@ void load_metadata() {
     // Inicializar regiones por bloque
     memset(regions_blocks, 0, sizeof(regions_blocks));
 
-    // Recorremos los inodos y reconstruimos regiones y uso de bytes
+    // Recorrer los inodos y reconstruir regiones y uso de bytes
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used || inodos[i].is_dir) continue;
 
@@ -127,13 +130,18 @@ struct fuse_operations fs_oper = {
     .open = fs_open,
 };
 
+// --------------------- LECTURA Y ESCRITURA DE PNGS -------------------------
+// Leer una estructura desde un PNG y mapearla a un buffer
 void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_size_bytes) {
     FILE *fp = fopen(filename, "rb");
+
+    // Verificar si el archivo se abrió correctamente
     if (!fp) {
         perror("Error abriendo PNG para lectura");
         exit(1);
     }
 
+    // Crear estructuras de lectura PNG
     png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!png_ptr) {
         fprintf(stderr, "Error creando png_structp para lectura\n");
@@ -141,6 +149,7 @@ void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_s
         exit(1);
     }
 
+    // Crear estructura de información PNG
     png_infop info_ptr = png_create_info_struct(png_ptr);
     if (!info_ptr) {
         fprintf(stderr, "Error creando png_infop para lectura\n");
@@ -149,6 +158,7 @@ void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_s
         exit(1);
     }
 
+    // Configurar el manejador de errores
     if (setjmp(png_jmpbuf(png_ptr))) {
         fprintf(stderr, "Error leyendo PNG\n");
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
@@ -156,9 +166,11 @@ void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_s
         exit(1);
     }
 
+    // Inicializar la lectura del PNG
     png_init_io(png_ptr, fp);
     png_read_info(png_ptr, info_ptr);
 
+    // Verificar que la imagen tenga las dimensiones y tipo de color esperados
     png_uint_32 width, height;
     int bit_depth, color_type;
     png_get_IHDR(png_ptr, info_ptr, &width, &height, &bit_depth, &color_type,
@@ -174,6 +186,7 @@ void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_s
         exit(1);
     }
 
+    // Asignar memoria para la fila de lectura
     size_t row_bytes = (1000 + 7) / 8;
     png_bytep row = (png_bytep) malloc(row_bytes);
     if (!row) {
@@ -183,61 +196,58 @@ void read_struct_from_png(const char *filename, uint8_t *buffer, size_t buffer_s
         exit(1);
     }
 
+    // Leer los datos de la imagen PNG
     memset(buffer, 0, buffer_size_bytes);
     size_t output_bit_index = 0;
 
+    // Leer cada fila de la imagen PNG
     for (int y = 0; y < 1000; y++) {
         png_read_row(png_ptr, row, NULL);
 
+        // Procesar cada byte de la fila
         for (int i = 0; i < row_bytes; i++) {
             uint8_t current_byte_from_png = row[i];
 
+            // Procesar cada bit del byte actual
             for (int bit_in_byte = 0; bit_in_byte < 8; bit_in_byte++) {
                 if (output_bit_index >= buffer_size_bytes * 8) {
                     break;
                 }
 
+                // Extraer el bit correspondiente del byte actual
                 uint8_t pixel_bit_from_png = (current_byte_from_png >> (7 - bit_in_byte)) & 1;
-
-                // *****************************************************************
-                // CAMBIO CLAVE AQUÍ: Invertir la lógica de mapeo
-                // write: 1 (input_data) -> 0 (PNG_bit) (Blanco)
-                //        0 (input_data) -> 1 (PNG_bit) (Negro)
-                //
-                // read:  0 (PNG_bit) -> 1 (output_buffer) (Blanco)
-                //        1 (PNG_bit) -> 0 (output_buffer) (Negro)
-                //
-                // Esto se logra con un simple NOT bit a bit, o (1 - pixel_bit_from_png)
-                uint8_t mapped_output_bit = (pixel_bit_from_png == 0) ? 1 : 0; // Si PNG es BLANCO (0), output es 1. Si PNG es NEGRO (1), output es 0.
-
-                // O de forma más concisa:
-                // uint8_t mapped_output_bit = !pixel_bit_from_png;
+                uint8_t mapped_output_bit = (pixel_bit_from_png == 0) ? 1 : 0; // Mapeamos 0 a 1 (blanco) y 1 a 0
 
                 // Almacenar el bit en el buffer de salida
                 if (mapped_output_bit == 1) { // Si el bit de salida mapeado es 1, establecerlo en el buffer
                     buffer[output_bit_index / 8] |= (1 << (7 - (output_bit_index % 8)));
                 }
                 // Si mapped_output_bit es 0, no hacemos nada, ya que el buffer se inicializó a 0.
-                // *****************************************************************
 
                 output_bit_index++;
             }
+            // Si hemos alcanzado el tamaño del buffer, salimos del bucle
             if (output_bit_index >= buffer_size_bytes * 8) break;
         }
     }
 
+    // Liberar memoria y destruir estructuras PNG
     free(row);
     png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
     fclose(fp);
 }
 
+// Escribe una estructura en un PNG, mapeando los bits de entrada
 void write_struct_to_png(const char *filename, const uint8_t *data, size_t data_size_bytes) {
     FILE *fp = fopen(filename, "wb");
+
+    // Verificar si el archivo se abrió correctamente
     if (!fp) {
         perror("Error abriendo archivo para escritura");
         exit(1);
     }
 
+    // Crear estructuras de escritura PNG
     png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if (!png_ptr) {
         fprintf(stderr, "Error creando png_structp para escritura\n");
@@ -245,6 +255,7 @@ void write_struct_to_png(const char *filename, const uint8_t *data, size_t data_
         exit(1);
     }
 
+    // Crear estructura de información PNG
     png_infop info_ptr = png_create_info_struct(png_ptr);
     if (!info_ptr) {
         fprintf(stderr, "Error creando png_infop para escritura\n");
@@ -253,6 +264,7 @@ void write_struct_to_png(const char *filename, const uint8_t *data, size_t data_
         exit(1);
     }
 
+    // Configurar el manejador de errores
     if (setjmp(png_jmpbuf(png_ptr))) {
         fprintf(stderr, "Error escribiendo PNG\n");
         png_destroy_write_struct(&png_ptr, &info_ptr);
@@ -260,16 +272,19 @@ void write_struct_to_png(const char *filename, const uint8_t *data, size_t data_
         exit(1);
     }
 
+    // Inicializar la escritura del PNG
     png_init_io(png_ptr, fp);
 
+    // Configurar los parámetros de la imagen PNG
     png_set_IHDR(png_ptr, info_ptr, 1000, 1000,
                  1, PNG_COLOR_TYPE_GRAY, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
 
-    png_set_compression_level(png_ptr, 0);
+    png_set_compression_level(png_ptr, 0);  // Sin compresión para mantener la estructura simple
 
-    png_write_info(png_ptr, info_ptr);
+    png_write_info(png_ptr, info_ptr);      // Escribir la cabecera PNG
 
+    // Asignar memoria para la fila de escritura
     size_t row_bytes = (1000 + 7) / 8;
     png_bytep row = (png_bytep)malloc(row_bytes);
     if (!row) {
@@ -281,45 +296,39 @@ void write_struct_to_png(const char *filename, const uint8_t *data, size_t data_
 
     size_t data_bit_index = 0;
 
+    // Inicializar la fila con 0xFF (todos los bits en 1, que es blanco en PNG)
     for (int y = 0; y < 1000; y++) {
-        // *****************************************************************
-        // CAMBIO CLAVE AQUÍ: Inicializar la fila a NEGRO (todos los bits a 1)
-        memset(row, 0xFF, row_bytes); // Rellenar con unos (para que los píxeles sean NEGROS por defecto)
-        // *****************************************************************
+        memset(row, 0xFF, row_bytes);
 
+        // Procesar cada bit de la fila
         for (int x = 0; x < 1000; x++) {
             if (data_bit_index < data_size_bytes * 8) {
                 uint8_t byte_from_data = data[data_bit_index / 8];
                 uint8_t input_bit = (byte_from_data >> (7 - (data_bit_index % 8))) & 1;
 
-                // *****************************************************************
-                // CAMBIO DE LÓGICA AQUÍ:
-                // Si el bit de entrada es 1, queremos BLANCO (PNG bit 0).
-                // Si el bit de entrada es 0, queremos NEGRO (PNG bit 1, que ya está por defecto).
-                if (input_bit == 1) { // Si el bit de entrada es 1 (queremos BLANCO)
-                    // Limpiar el bit correspondiente a 0 en el byte de la fila del PNG
-                    // Esto cambia el bit de 1 (negro) a 0 (blanco)
+                // Si input_bit es 1, establecer el bit correspondiente en la fila a 0 (negro)
+                if (input_bit == 1) {
                     row[x / 8] &= ~(1 << (7 - (x % 8)));
                 }
-                // Si input_bit es 0, el píxel permanece 1 (negro), que es el valor predeterminado.
-                // *****************************************************************
+                // Si input_bit es 0, el píxel permanece 1 (blanco), que es el valor predeterminado.
             } else {
-                // Si ya no hay más 'data' de entrada, los píxeles restantes se mantendrán
-                // en NEGRO (bits 1) gracias al memset inicial con 0xFF.
+                // Si ya no hay más 'data' de entrada, los píxeles restantes se mantendrán en blanco
             }
             data_bit_index++;
         }
         png_write_row(png_ptr, row);
     }
 
+    // Libera la memoria y destruye las estructuras png
     free(row);
     png_write_end(png_ptr, NULL);
     png_destroy_write_struct(&png_ptr, &info_ptr);
     fclose(fp);
 }
 
+// Lee un bloque de datos desde un archivo PNG
 void read_data_block(int block_id, uint8_t *buffer, size_t size) {
-    char path[256];
+    char path[1000];
     snprintf(path, sizeof(path), "%s/block_%04d.png", mount_folder, block_id);
     read_struct_from_png(path, buffer, size);
 }
@@ -329,20 +338,24 @@ int buscar_inodo_por_ruta(const char *path) {
     if (strcmp(path, "/") == 0) return -1;  // raíz especial
 
     // Copia mutable del path
-    char ruta_copia[256];
+    char ruta_copia[1000];
     strncpy(ruta_copia, path, sizeof(ruta_copia));
     ruta_copia[sizeof(ruta_copia)-1] = '\0';
 
     char *token;
     char *rest = ruta_copia;
 
+    // Comenzar desde la raíz
     int actual = -1;  // -1 = raíz
     token = strtok(rest, "/");
 
+    // Recorre cada token del path
     while (token != NULL) {
         int encontrado = 0;
 
+        // Si estamos en la raíz, buscamos desde el índice 0
         for (int i = 0; i < MAX_FILES; i++) {
+            // Si estamos en la raíz, buscamos desde el índice 0, si lo encontramos, actualizamos
             if (inodos[i].used && strcmp(inodos[i].name, token) == 0 && inodos[i].parent_inode == actual) {
                 actual = i;
                 encontrado = 1;
@@ -350,10 +363,12 @@ int buscar_inodo_por_ruta(const char *path) {
             }
         }
 
+        // Si no encontramos el token, retornamos error
         if (!encontrado) {
             return -ENOENT;
         }
 
+        // Avanzar al siguiente token
         token = strtok(NULL, "/");
     }
 
@@ -361,10 +376,13 @@ int buscar_inodo_por_ruta(const char *path) {
 }
 
 // --------------------- FUSE OPERATIONS -------------------------
+// Obtiene los atributos de un archivo o directorio
 static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
     (void)fi;
+    // Inicializar stbuf a cero
     memset(stbuf, 0, sizeof(struct stat));
 
+    // Si es la raíz, asignar atributos de directorio
     if (strcmp(path, "/") == 0) {
         stbuf->st_mode = S_IFDIR | 0755;  // rwxr-xr-x
         stbuf->st_nlink = 2;
@@ -372,6 +390,7 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
         return 0;
     }
 
+    // Buscar el inodo correspondiente al path
     int idx = buscar_inodo_por_ruta(path);
     if (idx >= 0) {
         if (inodos[idx].is_dir) {
@@ -386,9 +405,12 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
         return 0;
     }
 
+    // Si no se encontró el inodo, retornar error
+    printf("[getattr] No encontrado: %s\n", path);
     return -ENOENT;
 }
 
+// Lee el contenido de un directorio
 static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
     (void)offset;
@@ -407,7 +429,6 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     // Recorre todos los inodos y lista los que tengan como padre al actual
     for (int i = 0; i < MAX_FILES; i++) {
         if (inodos[i].used && inodos[i].parent_inode == dir_idx) {
-        // Debug opcional
         printf("[readdir] Listando: %s (inode %d, padre %d)\n", inodos[i].name, i, inodos[i].parent_inode);
 
         filler(buf, inodos[i].name, NULL, 0, 0);
@@ -417,10 +438,11 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     return 0;
 }
 
+// Crea un nuevo archivo o sobrescribe uno existente
 static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     (void)mode; (void)fi;
 
-    char copia1[256], copia2[256];
+    char copia1[1000], copia2[1000];
     strncpy(copia1, path, sizeof(copia1));
     strncpy(copia2, path, sizeof(copia2));
     copia1[sizeof(copia1) - 1] = '\0';
@@ -430,6 +452,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     char *padre = dirname(copia2);
 
     int padre_idx = buscar_inodo_por_ruta(padre);
+    // Verificar si el directorio padre existe y es un directorio
     if (padre_idx == -ENOENT || (padre_idx >= 0 && !inodos[padre_idx].is_dir)) {
         printf("[create] No encontrado o no es directorio: %s\n", padre);
         return -ENOENT;
@@ -456,7 +479,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
             }
 
             // Guardar cambios
-            char pathi[256];
+            char pathi[1000];
             snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
             write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
@@ -477,7 +500,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
             memset(inodos[i].block_offsets, 0, sizeof(inodos[i].block_offsets));
             memset(inodos[i].fragment_order, 0, sizeof(inodos[i].fragment_order));
 
-            char pathi[256];
+            char pathi[1000];
             snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
             write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
@@ -486,6 +509,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
         }
     }
 
+    printf("[create] No hay espacio para crear un nuevo archivo\n");
     return -ENOSPC;
 }
 
@@ -511,6 +535,7 @@ int allocate_new_block() {
     return -1;
 }
 
+// Abre un archivo para lectura/escritura
 static int fs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
 
@@ -585,7 +610,7 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
 
         // Leer bloque actual
         uint8_t tmp[BLOCK_SIZE];
-        char pathb[256];
+        char pathb[1000];
         snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, elegido);
         read_struct_from_png(pathb, tmp, BLOCK_SIZE);
 
@@ -630,7 +655,7 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
         inodo->size = offset + total_written;
 
     // Persistencia
-    char pathi[256], pathbm[256];
+    char pathi[1000], pathbm[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
@@ -774,7 +799,7 @@ static int fs_unlink(const char *path) {
     inodos[idx].used = 0;
 
     // Persistir cambios
-    char pathi[256];
+    char pathi[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
@@ -785,7 +810,7 @@ static int fs_unlink(const char *path) {
 static int fs_mkdir(const char *path, mode_t mode) {
     (void)mode;
 
-    char copia1[256], copia2[256];
+    char copia1[1000], copia2[1000];
     strncpy(copia1, path, sizeof(copia1));
     strncpy(copia2, path, sizeof(copia2));
     copia1[sizeof(copia1)-1] = '\0';
@@ -816,7 +841,7 @@ static int fs_mkdir(const char *path, mode_t mode) {
             inodos[i].size = 0;
             memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
 
-            char pathi[256];
+            char pathi[1000];
             snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
             write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
@@ -847,7 +872,7 @@ static int fs_rmdir(const char *path) {
     inodos[idx].parent_inode = -1;
 
     // Guardar cambios
-    char pathi[256];
+    char pathi[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
@@ -882,7 +907,7 @@ static int fs_rename(const char *from, const char *to, unsigned int flags) {
     }
 
     // Preparar nuevas partes
-    char copia1[256], copia2[256];
+    char copia1[1000], copia2[1000];
     strncpy(copia1, to, sizeof(copia1));
     strncpy(copia2, to, sizeof(copia2));
     copia1[sizeof(copia1)-1] = '\0';
@@ -910,7 +935,7 @@ static int fs_rename(const char *from, const char *to, unsigned int flags) {
     inodos[origen_idx].parent_inode = nuevo_padre_idx;
 
     // Guardar cambios
-    char pathi[256];
+    char pathi[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
@@ -972,7 +997,7 @@ static int fs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 
     printf("[fsync] ejecutado para '%s'\n", path);
 
-    char path_sb[256], path_inodes[256], path_bitmap[256];
+    char path_sb[1000], path_inodes[1000], path_bitmap[1000];
     snprintf(path_sb, sizeof(path_sb), "%s/block_0000.png", mount_folder);
     snprintf(path_inodes, sizeof(path_inodes), "%s/block_0001.png", mount_folder);
     snprintf(path_bitmap, sizeof(path_bitmap), "%s/block_0002.png", mount_folder);
@@ -1138,7 +1163,7 @@ static int fs_truncate(const char *path, off_t size) {
     }
 
     // Guardar cambios
-    char pathi[256], pathbm[256];
+    char pathi[1000], pathbm[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));

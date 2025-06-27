@@ -899,9 +899,10 @@ static int fs_rename(const char *from, const char *to, unsigned int flags) {
     for (int i = 0; i < MAX_FILES; i++) {
         if (inodos[i].used &&
             strcmp(inodos[i].name, nuevo_nombre) == 0 &&
-            inodos[i].parent_inode == nuevo_padre_idx)
-            printf("[rename] Ya existe un archivo con ese nombre: %s\n", nuevo_nombre);
-            return -EEXIST;
+            inodos[i].parent_inode == nuevo_padre_idx) {
+                printf("[rename] Ya existe un archivo con ese nombre: %s\n", nuevo_nombre);
+                return -EEXIST;
+        }
     }
 
     // Actualizar el inodo

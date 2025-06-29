@@ -104,16 +104,16 @@ int main(int argc, char *argv[]) {
         if (!bitmap[i] && used_blocks[i] > 0) used_blocks_not_marked++;
     }
 
-    printf("\n📊 Resumen de Estado de BWFS\n");
+    printf("\nResumen de Estado de BWFS\n");
     printf("────────────────────────────────────────\n");
-    printf("🗂️  Inodos usados:            %d\n", used_inodes);
-    printf("📁 Inodos libres:            %d\n", MAX_FILES - used_inodes);
-    printf("📦 Bloques referenciados:    %d\n", referenced_blocks);
-    printf("🧮 Bloques marcados (bitmap): %d\n", marked_blocks);
-    printf("⚠️  Bloques marcados no usados: %d\n", marked_blocks_not_used);
-    printf("❌ Bloques usados no marcados: %d\n", used_blocks_not_marked);
-    printf("📛 Nombres duplicados:        %d\n", duplicates);
-    printf("🔴 errors detectados:        %d\n", errors);
+    printf("Inodos usados:            %d\n", used_inodes);
+    printf("Inodos libres:            %d\n", MAX_FILES - used_inodes);
+    printf("Bloques referenciados:    %d\n", referenced_blocks);
+    printf("Bloques marcados (bitmap): %d\n", marked_blocks);
+    printf("Bloques marcados no usados: %d\n", marked_blocks_not_used);
+    printf("Bloques usados no marcados: %d\n", used_blocks_not_marked);
+    printf("Nombres duplicados:        %d\n", duplicates);
+    printf("Errores detectados:        %d\n", errors);
 
     // Retorna 1 si hay errores, 0 si todo está bien
     return errors ? 1 : 0;

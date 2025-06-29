@@ -334,7 +334,7 @@ void read_data_block(int block_id, uint8_t *buffer, size_t size) {
 }
 
 // Divide un path como "/a/b/c.txt" y recorre los inodos jerárquicamente
-int buscar_inodo_por_ruta(const char *path) {
+int search_inodo_by_path(const char *path) {
     if (strcmp(path, "/") == 0) return -1;  // raíz especial
 
     // Copia mutable del path
@@ -391,7 +391,7 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
     }
 
     // Buscar el inodo correspondiente al path
-    int idx = buscar_inodo_por_ruta(path);
+    int idx = search_inodo_by_path(path);
     if (idx >= 0) {
         if (inodos[idx].is_dir) {
             stbuf->st_mode = S_IFDIR | 0755;   // directorio: rwxr-xr-x
@@ -418,7 +418,7 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     (void)flags;
 
     // Obtener el índice del directorio actual (raíz = -1)
-    int dir_idx = (strcmp(path, "/") == 0) ? -1 : buscar_inodo_por_ruta(path);
+    int dir_idx = (strcmp(path, "/") == 0) ? -1 : search_inodo_by_path(path);
     if (dir_idx == -ENOENT || (dir_idx >= 0 && !inodos[dir_idx].is_dir))
     return -ENOENT;
 
@@ -451,7 +451,7 @@ static int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     char *nombre = basename(copia1);
     char *padre = dirname(copia2);
 
-    int padre_idx = buscar_inodo_por_ruta(padre);
+    int padre_idx = search_inodo_by_path(padre);
     // Verificar si el directorio padre existe y es un directorio
     if (padre_idx == -ENOENT || (padre_idx >= 0 && !inodos[padre_idx].is_dir)) {
         printf("[create] No encontrado o no es directorio: %s\n", padre);
@@ -535,17 +535,17 @@ int allocate_new_block() {
     return -1;
 }
 
-// Abre un archivo para lectura/escritura
+// Permite la escritura de un archivo, escribiendo datos en bloques
 static int fs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
 
-    int inodo_idx = buscar_inodo_por_ruta(path);
+    int inodo_idx = search_inodo_by_path(path);
     if (inodo_idx < 0 || inodos[inodo_idx].is_dir) return -ENOENT;
 
     Inode *inodo = &inodos[inodo_idx];
 
+    // Si se está escribiendo desde cero, limpiar estado anterior
     if (offset == 0) {
-        // Limpiar asignaciones anteriores del inodo
         for (int b = 0; b < sb.total_blocks; b++) {
             for (int r = 0; r < MAX_REGIONES; r++) {
                 if (regions_blocks[b][r].inodo_id == inodo_idx) {
@@ -564,13 +564,14 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
     int fragment_count = 0;
 
     for (int i = 0; i < MAX_BLOCKS_PER_FILE && total_written < size; i++) {
-        int elegido = -1;
-        int offset_en_bloque = -1;
+        int selected = -1;
+        int offset_in_block = -1;
 
-        // Buscar bloque con espacio continuo al final
+        // Paso 1: Buscar bloque con espacio restante al final
         for (int b = 3; b < sb.total_blocks; b++) {
             if (bitmap[b] == 0) continue;
 
+            // Calcular la posición final ocupada en este bloque
             int max_end = 0;
             for (int r = 0; r < MAX_REGIONES; r++) {
                 if (regions_blocks[b][r].size > 0) {
@@ -579,44 +580,49 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
                 }
             }
 
-            if (BLOCK_SIZE - max_end >= (int)(size - total_written)) {
-                elegido = b;
-                offset_en_bloque = max_end;
+            // Si hay espacio, lo usamos
+            if (BLOCK_SIZE - max_end >= 1) {
+                selected = b;
+                offset_in_block = max_end;
                 break;
             }
         }
 
-        // Si no hay bloque con suficiente espacio, usar uno nuevo
-        if (elegido == -1) {
+        // Paso 2: Si no se encontró bloque con espacio, buscar nuevo
+        if (selected == -1) {
             for (int b = 3; b < sb.total_blocks; b++) {
                 if (bitmap[b] == 0) {
-                    elegido = b;
+                    selected = b;
                     bitmap[b] = 1;
-                    offset_en_bloque = 0;
+                    offset_in_block = 0;
                     sb.used_blocks++;
                     break;
                 }
             }
         }
 
-        if (elegido == -1) {
+        // Fallo si no hay ningún bloque disponible
+        if (selected == -1) {
             printf("[write] No se pudo encontrar un bloque adecuado\n");
             return -ENOSPC;
         }
 
-        int bytes_a_escribir = BLOCK_SIZE - offset_en_bloque;
-        if (bytes_a_escribir > (int)(size - total_written))
-            bytes_a_escribir = size - total_written;
+        // Calcular cuántos bytes escribir en esta iteración
+        int bytes_to_write = BLOCK_SIZE - offset_in_block;
+        if (bytes_to_write > (int)(size - total_written))
+            bytes_to_write = size - total_written;
 
-        // Leer bloque actual
+        // Leer el contenido actual del bloque elegido
         uint8_t tmp[BLOCK_SIZE];
         char pathb[1000];
-        snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, elegido);
+        snprintf(pathb, sizeof(pathb), "%s/block_%04d.png", mount_folder, selected);
         read_struct_from_png(pathb, tmp, BLOCK_SIZE);
 
-        memcpy(tmp + offset_en_bloque, buf + total_written, bytes_a_escribir);
+        // Escribir los nuevos datos
+        memcpy(tmp + offset_in_block, buf + total_written, bytes_to_write);
         write_struct_to_png(pathb, tmp, BLOCK_SIZE);
 
+        // Buscar slot libre en los arrays del inodo
         int slot = -1;
         for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
             if (inodo->block_pointers[j] == 0) {
@@ -624,58 +630,63 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
                 break;
             }
         }
+
         if (slot == -1) return -ENOSPC;
 
-        inodo->block_pointers[slot] = elegido;
-        inodo->block_offsets[slot] = offset_en_bloque;
-        inodo->fragment_order[slot] = inodo->size + total_written;  // usar offset lógico
+        // Registrar asignación
+        inodo->block_pointers[slot] = selected;
+        inodo->block_offsets[slot] = offset_in_block;
+        inodo->fragment_order[slot] = offset + total_written;
 
-
-        // Imprimir debug
-        printf("[write] Escribiendo %zu bytes en bloque %d, offset %d\n",
-               bytes_a_escribir, elegido, offset_en_bloque);
-
-        // Registrar región en el bloque
+        // Registrar región del bloque
         for (int r = 0; r < MAX_REGIONES; r++) {
-            if (regions_blocks[elegido][r].size == 0) {
-                regions_blocks[elegido][r].inodo_id = inodo_idx;
-                regions_blocks[elegido][r].offset = offset_en_bloque;
-                regions_blocks[elegido][r].size = bytes_a_escribir;
+            if (regions_blocks[selected][r].size == 0) {
+                regions_blocks[selected][r].inodo_id = inodo_idx;
+                regions_blocks[selected][r].offset = offset_in_block;
+                regions_blocks[selected][r].size = bytes_to_write;
                 break;
             }
         }
 
-        if (used_bytes[elegido] < offset_en_bloque + bytes_a_escribir)
-            used_bytes[elegido] = offset_en_bloque + bytes_a_escribir;
+        // Actualizar uso del bloque
+        if (used_bytes[selected] < offset_in_block + bytes_to_write)
+            used_bytes[selected] = offset_in_block + bytes_to_write;
 
-        total_written += bytes_a_escribir;
+        printf("[write] Escribiendo %zu bytes en bloque %d, offset %d\n",
+               bytes_to_write, selected, offset_in_block);
+
+        total_written += bytes_to_write;
     }
 
+    // Actualizar tamaño lógico del archivo si creció
     if ((size_t)(offset + total_written) > (size_t)inodo->size)
         inodo->size = offset + total_written;
 
-    // Persistencia
+    // Guardar estructuras actualizadas en disco
     char pathi[1000], pathbm[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
     write_struct_to_png(pathbm, bitmap, sizeof(bitmap));
 
-    printf("[write] Escribí %zu de %zu bytes\n", total_written, size);
     return total_written;
 }
 
+// Permite leer un archivo, leyendo datos desde bloques asignados
 static int fs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     (void)fi;
 
-    int idx = buscar_inodo_por_ruta(path);
+    // Verificar si el archivo existe y es regular
+    int idx = search_inodo_by_path(path);
     if (idx < 0 || inodos[idx].is_dir) return -ENOENT;
 
+    // Verificar si el offset es válido
     if ((size_t)offset >= inodos[idx].size) {
         printf("[read] Offset %zu fuera de rango para archivo %s\n", offset, inodos[idx].name);
         return 0;
     }
 
+    //Se obtiene el tamaño a leer, asegurando que no exceda el tamaño del archivo
     size_t bytes_to_read = (offset + size > inodos[idx].size)
         ? (inodos[idx].size - offset) : size;
 
@@ -690,9 +701,11 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
         int order;
     } Fragment;
 
+    // Arreglo para almacenar fragmentos encontrados
     Fragment frags[MAX_BLOCKS_PER_FILE];
     int frag_count = 0;
 
+    //Recorrer los bloques del inodo y llenar la estructura de fragmentos
     for (int i = 0; i < MAX_BLOCKS_PER_FILE; i++) {
         if (inodos[idx].block_pointers[i] == 0) continue;
 
@@ -708,6 +721,7 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
             }
         }
 
+        // 
         frags[frag_count].block_id = blk;
         frags[frag_count].offset = off;
         frags[frag_count].length = len;
@@ -750,24 +764,23 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
     return total_read;
 }
 
+// Abre un archivo si existe y no es un directorio
 static int fs_open(const char *path, struct fuse_file_info *fi) {
     (void)fi;
 
-    int idx = buscar_inodo_por_ruta(path);
-    if (idx >= 0 && !inodos[idx].is_dir) {
-        printf("[open] Abriendo archivo: %s (inode %d)\n", inodos[idx].name, idx);
-        return 0;  // OK: es archivo regular
-    }
+    int idx = search_inodo_by_path(path);
+    if (idx >= 0 && !inodos[idx].is_dir)
+        return 0;  // Éxito
 
-    printf("[open] No encontrado o no es archivo regular: %s\n", path);
-    return -ENOENT;
+    return -ENOENT;  // Archivo no encontrado o es un directorio
 }
 
+// Elimina un archivo del sistema
 static int fs_unlink(const char *path) {
-    int idx = buscar_inodo_por_ruta(path);
-    if (idx < 0 || inodos[idx].is_dir) return -ENOENT;
+    int idx = search_inodo_by_path(path);
+    if (idx < 0 || inodos[idx].is_dir) return -ENOENT;  // Archivo no encontrado o es un directorio
 
-    // Limpiar regiones
+    // Limpiar referencias del inodo en las regiones de bloques
     for (int b = 0; b < sb.total_blocks; b++) {
         for (int r = 0; r < MAX_REGIONES; r++) {
             if (regions_blocks[b][r].inodo_id == idx) {
@@ -778,27 +791,28 @@ static int fs_unlink(const char *path) {
         }
     }
 
-    // Liberar bloques si ya no están en uso
+    // Liberar bloques que ya no contienen regiones activas
     for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
         int blk = inodos[idx].block_pointers[j];
         if (blk > 2 && blk < sb.total_blocks) {
-            bool en_uso = false;
+            bool in_use = false;
             for (int x = 0; x < MAX_REGIONES; x++) {
                 if (regions_blocks[blk][x].size > 0) {
-                    en_uso = true;
+                    in_use = true;
                     break;
                 }
             }
-            if (!en_uso) {
+            if (!in_use) {
                 bitmap[blk] = 0;
                 used_bytes[blk] = 0;
             }
         }
     }
 
+    // Marcar el inodo como no usado
     inodos[idx].used = 0;
 
-    // Persistir cambios
+    // Guardar cambios en disco
     char pathi[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
@@ -807,91 +821,104 @@ static int fs_unlink(const char *path) {
     return 0;
 }
 
+// Crea un nuevo directorio en el sistema de archivos
 static int fs_mkdir(const char *path, mode_t mode) {
-    (void)mode;
+    (void)mode;  // El modo no se usa en este sistema
 
-    char copia1[1000], copia2[1000];
-    strncpy(copia1, path, sizeof(copia1));
-    strncpy(copia2, path, sizeof(copia2));
-    copia1[sizeof(copia1)-1] = '\0';
-    copia2[sizeof(copia2)-1] = '\0';
-    
-    char *nombre = basename(copia1);
-    char *padre = dirname(copia2);
+    // Copiar path para manipularlo
+    char copy1[1000], copy2[1000];
+    strncpy(copy1, path, sizeof(copy1));
+    strncpy(copy2, path, sizeof(copy2));
+    copy1[sizeof(copy1)-1] = '\0';
+    copy2[sizeof(copy2)-1] = '\0';
 
-    int padre_idx = buscar_inodo_por_ruta(padre);
-    if (padre_idx == -ENOENT || (padre_idx >= 0 && !inodos[padre_idx].is_dir)) {
-        printf("[mkdir] No encontrado o no es directorio: %s\n", padre);
-        return -ENOENT;
+    // Separar en nombre del nuevo directorio y ruta del padre
+    char *name = basename(copy1);
+    char *parent = dirname(copy2);
+
+    // Buscar el inodo del directorio padre
+    int parent_idx = search_inodo_by_path(parent);
+    if (parent_idx == -ENOENT || (parent_idx >= 0 && !inodos[parent_idx].is_dir)) {
+        return -ENOENT;  // No existe o no es un directorio
     }
 
+    // Verificar si ya existe un archivo/directorio con ese nombre en ese padre
     for (int i = 0; i < MAX_FILES; i++) {
-        if (inodos[i].used && strcmp(inodos[i].name, nombre) == 0 && inodos[i].parent_inode == padre_idx) {
-            printf("[mkdir] Ya existe un directorio con ese nombre: %s\n", nombre);
-            return -EEXIST;
+        if (inodos[i].used &&
+            strcmp(inodos[i].name, name) == 0 &&
+            inodos[i].parent_inode == parent_idx) {
+            return -EEXIST;  // Ya existe con ese nombre
         }
     }
 
+    // Buscar un inodo libre para crear el directorio
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used) {
             inodos[i].used = 1;
             inodos[i].is_dir = 1;
-            inodos[i].parent_inode = padre_idx;  // 👈 Enlace al padre
-            strncpy(inodos[i].name, nombre, sizeof(inodos[i].name) - 1);
+            inodos[i].parent_inode = parent_idx;
+            strncpy(inodos[i].name, name, sizeof(inodos[i].name) - 1);
             inodos[i].size = 0;
             memset(inodos[i].block_pointers, 0, sizeof(inodos[i].block_pointers));
 
+            // Guardar cambios en disco
             char pathi[1000];
             snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
             write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
-            printf("[mkdir] Directorio creado: %s (inode %d)\n", inodos[i].name, i);
-            return 0;
+            return 0;  // Éxito
         }
     }
 
-    printf("[mkdir] No hay espacio para crear un nuevo directorio\n");
-    return -ENOSPC;
+    return -ENOSPC;  // No hay espacio para más inodos
 }
 
 static int fs_rmdir(const char *path) {
-    int idx = buscar_inodo_por_ruta(path);
+    // Buscar índice del inodo por la ruta
+    int idx = search_inodo_by_path(path);
     if (idx < 0) {
+        // No se encontró el inodo
         printf("[rmdir] No encontrado: %s\n", path);
         return -ENOENT;
     }
 
     if (!inodos[idx].is_dir) {
+        // El inodo no es un directorio
         printf("[rmdir] No es un directorio: %s\n", path);
         return -ENOTDIR;
     }
 
-    // Limpiar inodo
+    // Limpiar y marcar el inodo como libre
     inodos[idx].used = 0;
     memset(&inodos[idx], 0, sizeof(Inode));
     inodos[idx].parent_inode = -1;
 
-    // Guardar cambios
+    // Guardar los cambios en el almacenamiento persistente
     char pathi[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
 
+    // Confirmación de eliminación
     printf("[rmdir] Directorio eliminado: %s (inode %d)\n", inodos[idx].name, idx);
     return 0;
 }
 
 static int fs_opendir(const char *path, struct fuse_file_info *fi) {
+    // Permitir acceso a la raíz directamente
     if (strcmp(path, "/") == 0) {
         printf("[opendir] Accediendo a raíz: %s\n", path);
-        return 0;  // raíz especial
+        return 0;
     }
 
-    int idx = buscar_inodo_por_ruta(path);
+    // Buscar el inodo correspondiente a la ruta
+    int idx = search_inodo_by_path(path);
+    // Verificar que exista y sea un directorio
     if (idx >= 0 && inodos[idx].is_dir) {
         printf("[opendir] Accediendo a inodo %d: %s\n", idx, inodos[idx].name);
         return 0;
     }
 
+    // No existe o no es directorio
     printf("[opendir] No encontrado o no es directorio: %s\n", path);
     return -ENOENT;
 }
@@ -899,42 +926,44 @@ static int fs_opendir(const char *path, struct fuse_file_info *fi) {
 static int fs_rename(const char *from, const char *to, unsigned int flags) {
     (void)flags;
 
-    // Obtener inodo original
-    int origen_idx = buscar_inodo_por_ruta(from);
-    if (origen_idx < 0) {
+    // Buscar inodo del archivo/directorio origen
+    int origin_idx = search_inodo_by_path(from);
+    if (origin_idx < 0) {
         printf("[rename] No encontrado: %s\n", from);
         return -ENOENT;
     }
 
-    // Preparar nuevas partes
-    char copia1[1000], copia2[1000];
-    strncpy(copia1, to, sizeof(copia1));
-    strncpy(copia2, to, sizeof(copia2));
-    copia1[sizeof(copia1)-1] = '\0';
-    copia2[sizeof(copia2)-1] = '\0';
+    // Copiar la ruta destino para manipular nombre y directorio padre
+    char copy1[1000], copy2[1000];
+    strncpy(copy1, to, sizeof(copy1));
+    strncpy(copy2, to, sizeof(copy2));
+    copy1[sizeof(copy1)-1] = '\0';
+    copy2[sizeof(copy2)-1] = '\0';
 
-    char *nuevo_nombre = basename(copia1);
-    char *nuevo_padre_path = dirname(copia2);
-    int nuevo_padre_idx = buscar_inodo_por_ruta(nuevo_padre_path);
+    // Extraer nuevo nombre y ruta padre destino
+    char *new_name = basename(copy1);
+    char *new_parent_path = dirname(copy2);
+    int new_parent_idx = search_inodo_by_path(new_parent_path);
 
-    if (nuevo_padre_idx < -1 || (nuevo_padre_idx >= 0 && !inodos[nuevo_padre_idx].is_dir))
+    // Verificar que el nuevo padre exista y sea directorio
+    if (new_parent_idx < -1 || (new_parent_idx >= 0 && !inodos[new_parent_idx].is_dir))
         return -ENOENT;
 
-    // Verificar que no exista ya un archivo con el mismo nombre en el nuevo lugar
+    // Comprobar que no exista un archivo con el mismo nombre en destino
     for (int i = 0; i < MAX_FILES; i++) {
         if (inodos[i].used &&
-            strcmp(inodos[i].name, nuevo_nombre) == 0 &&
-            inodos[i].parent_inode == nuevo_padre_idx) {
-                printf("[rename] Ya existe un archivo con ese nombre: %s\n", nuevo_nombre);
+            strcmp(inodos[i].name, new_name) == 0 &&
+            inodos[i].parent_inode == new_parent_idx) {
+                printf("[rename] Ya existe un archivo con ese nombre: %s\n", new_name);
                 return -EEXIST;
         }
     }
 
-    // Actualizar el inodo
-    strncpy(inodos[origen_idx].name, nuevo_nombre, sizeof(inodos[origen_idx].name) - 1);
-    inodos[origen_idx].parent_inode = nuevo_padre_idx;
+    // Actualizar nombre y padre en el inodo origen
+    strncpy(inodos[origin_idx].name, new_name, sizeof(inodos[origin_idx].name) - 1);
+    inodos[origin_idx].parent_inode = new_parent_idx;
 
-    // Guardar cambios
+    // Guardar cambios persistentes
     char pathi[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     write_struct_to_png(pathi, (uint8_t*)inodos, sizeof(inodos));
@@ -944,52 +973,55 @@ static int fs_rename(const char *from, const char *to, unsigned int flags) {
 }
 
 static int fs_statfs(const char *path, struct statvfs *st) {
-    (void)path;
+    (void)path; // No se usa el path en esta función
 
+    // Configurar tamaño de bloque y total de bloques del FS
     st->f_bsize = BLOCK_SIZE;
     st->f_frsize = BLOCK_SIZE;
     st->f_blocks = sb.total_blocks;
 
-    // Contar bloques libres
-    int libres = 0;
+    // Contar bloques libres en el bitmap
+    int free_blocks = 0;
     for (int i = 0; i < sb.total_blocks; i++) {
         if (bitmap[i] == 0)
-            libres++;
+            free_blocks++;
     }
 
-    st->f_bfree = libres;
-    st->f_bavail = libres;
+    st->f_bfree = free_blocks;   // bloques libres totales
+    st->f_bavail = free_blocks;  // bloques disponibles para usuario
 
-    // Cantidad de archivos posibles
+    // Número máximo de archivos (inodos)
     st->f_files = MAX_FILES;
 
     // Contar inodos libres
-    int inodos_libres = 0;
+    int free_inodes = 0;
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used)
-            inodos_libres++;
+            free_inodes++;
     }
 
-    st->f_ffree = inodos_libres;
-    st->f_favail = inodos_libres;
+    st->f_ffree = free_inodes;   // inodos libres totales
+    st->f_favail = free_inodes;  // inodos disponibles para usuario
 
-    st->f_namemax = 63;  // límite real de tu campo name[64]
+    st->f_namemax = 63;  // longitud máxima del nombre (name[64])
 
+    // Imprimir resumen de la info del sistema de archivos
     printf("[statfs] Información del sistema de archivos:\n");
     printf("  Tamaño de bloque: %zu\n", st->f_bsize);
     printf("  Bloques totales: %lu\n", st->f_blocks);
     printf("  Bloques libres: %lu\n", st->f_bfree);
     printf("  Bloques disponibles: %lu\n", st->f_bavail);
     printf("  Inodos totales: %d\n", MAX_FILES);
-    printf("  Inodos libres: %d\n", inodos_libres);
+    printf("  Inodos libres: %d\n", free_inodes);
     return 0;
 }
 
 static int fs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi) {
-    (void)isdatasync;
-    (void)fi;
+    (void)isdatasync;  // Parámetro no usado
+    (void)fi;          // Parámetro no usado
 
-    int idx = buscar_inodo_por_ruta(path);
+    // Buscar inodo correspondiente al path
+    int idx = search_inodo_by_path(path);
     if (idx < 0) {
         printf("[fsync] No encontrado: %s\n", path);
         return -ENOENT;
@@ -997,11 +1029,13 @@ static int fs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 
     printf("[fsync] ejecutado para '%s'\n", path);
 
+    // Construir rutas de los bloques del sistema de archivos
     char path_sb[1000], path_inodes[1000], path_bitmap[1000];
     snprintf(path_sb, sizeof(path_sb), "%s/block_0000.png", mount_folder);
     snprintf(path_inodes, sizeof(path_inodes), "%s/block_0001.png", mount_folder);
     snprintf(path_bitmap, sizeof(path_bitmap), "%s/block_0002.png", mount_folder);
 
+    // Guardar estructuras del superbloque, inodos y bitmap a disco
     write_struct_to_png(path_sb, (const uint8_t*)&sb, sizeof(sb));
     write_struct_to_png(path_inodes, (const uint8_t*)inodos, sizeof(inodos));
     write_struct_to_png(path_bitmap, bitmap, sizeof(bitmap));
@@ -1013,43 +1047,48 @@ static int fs_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 static int fs_access(const char *path, int mask) {
     printf("[access] Verificando acceso a: %s\n", path);
 
+    // Permitir acceso directo a la raíz
     if (strcmp(path, "/") == 0) {
         printf("[access] Es el directorio raíz.\n");
         return 0;
     }
 
-    int idx = buscar_inodo_por_ruta(path);
+    // Buscar inodo asociado al path
+    int idx = search_inodo_by_path(path);
     if (idx >= 0) {
         printf("[access] Archivo o directorio '%s' encontrado (inode %d).\n", path, idx);
 
-        // Opcional: aquí podrías usar mask para validar permisos específicos
-        // Pero como no manejamos usuarios ni permisos reales, devolvemos 0 (OK)
+        // No se validan permisos reales, siempre OK si existe
         return 0;
     }
 
+    // No existe el archivo o directorio
     printf("[access] '%s' NO encontrado.\n", path);
     return -ENOENT;
 }
 
 static int fs_flush(const char *path, struct fuse_file_info *fi) {
-    (void)fi;
+    (void)fi;  // Parámetro no usado
 
-    int idx = buscar_inodo_por_ruta(path);
+    // Buscar inodo asociado a la ruta
+    int idx = search_inodo_by_path(path);
     if (idx < 0) {
         printf("[flush] No encontrado: %s\n", path);
         return -ENOENT;
     }
 
+    // Confirmar cierre de descriptor de archivo
     printf("[flush] Se cerró el descriptor para %s (inode %d)\n", path, idx);
 
-    // No se hace nada porque write y fsync ya guardan los cambios
+    // No se realiza acción adicional, write/fsync ya guardan cambios
     return 0;
 }
 
 static off_t fs_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi) {
-    (void)fi;
+    (void)fi; // No se usa el file info
 
-    int idx = buscar_inodo_por_ruta(path);
+    // Buscar inodo y verificar que sea archivo regular
+    int idx = search_inodo_by_path(path);
     if (idx < 0 || inodos[idx].is_dir) {
         printf("[lseek] No encontrado o no es archivo regular: %s\n", path);
         return -ENOENT;
@@ -1057,12 +1096,13 @@ static off_t fs_lseek(const char *path, off_t off, int whence, struct fuse_file_
 
     off_t result = 0;
 
+    // Calcular nuevo offset según 'whence'
     switch (whence) {
         case SEEK_SET:
             result = off;
             break;
         case SEEK_CUR:
-            result = off;  // como no usamos fi->fh como offset, lo tratamos como relativo
+            result = off; // No se usa offset actual, se interpreta relativo
             break;
         case SEEK_END:
             result = inodos[idx].size + off;
@@ -1072,6 +1112,7 @@ static off_t fs_lseek(const char *path, off_t off, int whence, struct fuse_file_
             return -EINVAL;
     }
 
+    // Validar que el nuevo offset esté dentro del tamaño del archivo
     if (result < 0 || result > inodos[idx].size) {
         printf("[lseek] Offset fuera de rango: %ld para archivo %s (size %zu)\n", result, path, inodos[idx].size);
         return -EINVAL;
@@ -1082,7 +1123,8 @@ static off_t fs_lseek(const char *path, off_t off, int whence, struct fuse_file_
 }
 
 static int fs_truncate(const char *path, off_t size) {
-    int inodo_idx = buscar_inodo_por_ruta(path);
+    // Buscar inodo del archivo
+    int inodo_idx = search_inodo_by_path(path);
     if (inodo_idx < 0 || inodos[inodo_idx].is_dir) {
         printf("[truncate] No encontrado o no es archivo regular: %s\n", path);
         return -ENOENT;
@@ -1091,7 +1133,7 @@ static int fs_truncate(const char *path, off_t size) {
     Inode *inodo = &inodos[inodo_idx];
 
     if (size == 0) {
-        // Eliminar todas las regiones de este inodo
+        // Truncar a cero: liberar todas las regiones y resetear punteros
         for (int b = 0; b < sb.total_blocks; b++) {
             for (int r = 0; r < MAX_REGIONES; r++) {
                 if (regions_blocks[b][r].inodo_id == inodo_idx) {
@@ -1104,32 +1146,32 @@ static int fs_truncate(const char *path, off_t size) {
         memset(inodo->block_offsets, 0, sizeof(inodo->block_offsets));
         memset(inodo->fragment_order, 0, sizeof(inodo->fragment_order));
         inodo->size = 0;
+
     } else if (size < inodo->size) {
-        // Recortar el archivo
+        // Recortar archivo: ajustar tamaños de fragmentos y liberar posteriores
         size_t remaining = size;
         for (int i = 0; i < MAX_BLOCKS_PER_FILE; i++) {
             if (inodo->block_pointers[i] == 0) continue;
 
             int block_id = inodo->block_pointers[i];
             int offset_bloque = inodo->block_offsets[i];
-            int bytes_in_frag = 0;
 
-            // Buscar la región correspondiente para este inodo y fragmento
             for (int r = 0; r < MAX_REGIONES; r++) {
                 if (regions_blocks[block_id][r].inodo_id == inodo_idx &&
                     regions_blocks[block_id][r].offset == offset_bloque) {
-                    bytes_in_frag = regions_blocks[block_id][r].size;
+                    int bytes_in_frag = regions_blocks[block_id][r].size;
 
                     if (remaining >= bytes_in_frag) {
                         remaining -= bytes_in_frag;
                     } else {
-                        // Truncar dentro de este fragmento
+                        // Truncar dentro del fragmento actual
                         regions_blocks[block_id][r].size = remaining;
                         used_bytes[block_id] = offset_bloque + remaining;
                         remaining = 0;
                     }
+
                     if (remaining == 0) {
-                        // Eliminar fragmentos posteriores
+                        // Liberar fragmentos posteriores
                         for (int j = i + 1; j < MAX_BLOCKS_PER_FILE; j++) {
                             int b2 = inodo->block_pointers[j];
                             int off2 = inodo->block_offsets[j];
@@ -1150,10 +1192,11 @@ static int fs_truncate(const char *path, off_t size) {
             }
         }
         inodo->size = size;
+
     } else if ((size_t)size > inodo->size) {
-        // Expandir con ceros
+        // Expandir archivo llenando con ceros
         size_t to_fill = size - inodo->size;
-        char *zero_buffer = calloc(to_fill, 1);  // \0-filled
+        char *zero_buffer = calloc(to_fill, 1);
         if (!zero_buffer) {
             printf("[expand] Error al asignar memoria\n");
             return -ENOMEM;
@@ -1162,7 +1205,7 @@ static int fs_truncate(const char *path, off_t size) {
         free(zero_buffer);
     }
 
-    // Guardar cambios
+    // Guardar cambios en disco
     char pathi[1000], pathbm[1000];
     snprintf(pathi, sizeof(pathi), "%s/block_0001.png", mount_folder);
     snprintf(pathbm, sizeof(pathbm), "%s/block_0002.png", mount_folder);

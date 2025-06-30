@@ -115,7 +115,7 @@ int main(int argc, char *argv[]) {
         .bitmap_start = 2
     };
 
-    Inode inodos[MAX_FILES] = {0};
+    Inode *inodos = malloc(sizeof(Inode) * MAX_FILES);
     uint8_t bitmap[TOTAL_BLOCKS] = {0};
     bitmap[0] = 1;  // superbloque
     bitmap[1] = 1;  // inodos

@@ -14,7 +14,7 @@
 
 // --------------------- GLOBALS -------------------------
 Superblock sb;
-Inode inodos[MAX_FILES];
+Inode *inodos;
 char mount_folder[1000];
 uint8_t bitmap[MAX_BLOCKS];
 uint16_t used_bytes[MAX_BLOCKS];
@@ -36,6 +36,13 @@ UsedRegion regions_blocks[MAX_BLOCKS][MAX_REGIONES];
 // Carga los metadatos del sistema de archivos desde los PNGs
 void load_metadata() {
     char path[1000];
+
+    inodos = malloc(sizeof(Inode) * MAX_FILES);
+    if (!inodos) {
+        perror("Error al asignar memoria para inodos");
+        exit(1);
+    }
+    memset(inodos, 0, sizeof(Inode) * MAX_FILES);
 
     // Leer superbloque, inodos y bitmap desde PNGs
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
@@ -650,29 +657,13 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
         // Verificar si el bloque ya estaba asignado al inodo
         int slot = -1;
         for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
-            if (inodo->block_pointers[j] == selected) {
-                slot = j; // Ya estaba asignado, solo actualizamos offset si queremos
+            if (inodo->block_pointers[j] == 0) {
+                slot = j;
                 break;
             }
         }
 
-        // Si no estaba asignado, buscar un slot nuevo
-        if (slot == -1) {
-            for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
-                if (inodo->block_pointers[j] == 0) {
-                    slot = j;
-                    inodo->block_pointers[slot] = selected;
-                    printf("[write] Asignando nuevo bloque %d al inodo %d (slot %d)\n", selected, inodo_idx, slot);
-                    break;
-                }
-            }
-        }
-
-        // Si no hay espacio, error
-        if (slot == -1) {
-            printf("[write] Error: inodo %d ya alcanzó el máximo de bloques permitidos\n", inodo_idx);
-            return -ENOSPC;
-        }
+        if (slot == -1) return -ENOSPC;
 
         // Registrar asignación
         inodo->block_pointers[slot] = selected;

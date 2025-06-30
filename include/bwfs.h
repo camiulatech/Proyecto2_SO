@@ -5,9 +5,9 @@
 #define FS_SIZE_MB 60            // Tamaño del sistema de archivos en MB
 #define BLOCK_SIZE 125000       // Simulado: 1 bloque = 1 imagen = 1024 bytes
 #define MAX_BLOCKS 1024         // Máximo de bloques por FS
-#define MAX_FILES 1025         // Máximo de archivos por FS
+#define MAX_FILES 10000         // Máximo de archivos por FS
 
-#define MAX_BLOCKS_PER_FILE ((FS_SIZE_MB * 1024 * 1024) / BLOCK_SIZE) // Máximo de bloques por archivo
+#define MAX_BLOCKS_PER_FILE (((FS_SIZE_MB * 1024 * 1024) / BLOCK_SIZE)*2) // Máximo de bloques por archivo
 
 // Estructura del Superbloque
 typedef struct {
@@ -24,9 +24,9 @@ typedef struct {
     uint8_t is_dir;  // 👈 Nuevo campo: 1 si es directorio, 0 si es archivo
     char name[1000];
     int size;
-    int fragment_order[MAX_BLOCKS_PER_FILE]; // Indica el orden lógico de los bloques
-    int block_pointers[MAX_BLOCKS_PER_FILE]; // Soporte para archivos de hasta 8 bloques
-    int block_offsets[MAX_BLOCKS_PER_FILE]; // Nuevos offsets para cada bloque
+    int fragment_order[MAX_BLOCKS_PER_FILE * 2]; // Indica el orden lógico de los bloques
+    int block_pointers[MAX_BLOCKS_PER_FILE * 2]; // Soporte para archivos de hasta 8 bloques
+    int block_offsets[MAX_BLOCKS_PER_FILE * 2]; // Nuevos offsets para cada bloque
     int parent_inode;
 } Inode;
 

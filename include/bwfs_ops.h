@@ -8,7 +8,7 @@
 extern struct fuse_operations fs_oper;
 extern char mount_folder[1000];
 extern Superblock sb;
-extern Inode inodos[MAX_FILES];
+extern Inode *inodos;
 extern uint8_t bitmap[MAX_BLOCKS];
 extern uint16_t used_bytes[MAX_BLOCKS];
 

@@ -905,6 +905,15 @@ static int fs_rmdir(const char *path) {
         return -ENOTDIR;
     }
 
+    // Verificar que el directorio esté vacío
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inodos[i].used && inodos[i].parent_inode == idx) {
+            // El directorio no está vacío
+            printf("[rmdir] Directorio no vacío: %s\n", path);
+            return -ENOTEMPTY;
+        }
+    }
+
     // Limpiar y marcar el inodo como libre
     inodos[idx].used = 0;
     memset(&inodos[idx], 0, sizeof(Inode));
@@ -1027,7 +1036,6 @@ static int fs_statfs(const char *path, struct statvfs *st) {
     printf("  Tamaño de bloque: %zu\n", st->f_bsize);
     printf("  Bloques totales: %lu\n", st->f_blocks);
     printf("  Bloques libres: %lu\n", st->f_bfree);
-    printf("  Bloques disponibles: %lu\n", st->f_bavail);
     printf("  Inodos totales: %d\n", MAX_FILES);
     printf("  Inodos libres: %d\n", free_inodes);
     return 0;

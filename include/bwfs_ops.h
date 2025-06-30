@@ -6,7 +6,7 @@
 
 // Estructuras globales
 extern struct fuse_operations fs_oper;
-extern char mount_folder[256];
+extern char mount_folder[1000];
 extern Superblock sb;
 extern Inode inodos[MAX_FILES];
 extern uint8_t bitmap[MAX_BLOCKS];

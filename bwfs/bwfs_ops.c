@@ -53,6 +53,27 @@ void load_metadata() {
     // Inicializar regiones por bloque
     memset(regions_blocks, 0, sizeof(regions_blocks));
 
+    // Limpiar bloques huérfanos (sin ningún inodo apuntando a ellos)
+    for (int b = 3; b < sb.total_blocks; b++) {
+        int usado = 0;
+
+        for (int i = 0; i < MAX_FILES && !usado; i++) {
+            if (!inodos[i].used) continue;
+
+            for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
+                if (inodos[i].block_pointers[j] == b) {
+                    usado = 1;
+                    break;
+                }
+            }
+        }
+
+        // Si ningún inodo apunta al bloque, se marca como libre
+        if (!usado) {
+            bitmap[b] = 0;
+        }
+    }
+
     // Recorrer los inodos y reconstruir regiones y uso de bytes
     for (int i = 0; i < MAX_FILES; i++) {
         if (!inodos[i].used || inodos[i].is_dir) continue;
@@ -63,7 +84,10 @@ void load_metadata() {
             int block_id = inodos[i].block_pointers[j];
             int offset   = inodos[i].block_offsets[j];
 
-            if (block_id == 0) continue;
+            if (block_id <= 0 || block_id >= sb.total_blocks) continue;
+
+            // Ignorar fragmentos inválidos
+            if (offset < 0 || offset >= BLOCK_SIZE) continue;
 
             int bytes_in_block = (size_remaining > BLOCK_SIZE - offset)
                                 ? (BLOCK_SIZE - offset)
@@ -828,6 +852,9 @@ static int fs_unlink(const char *path) {
 
     // Marcar el inodo como no usado
     inodos[idx].used = 0;
+    memset(inodos[idx].block_pointers, 0, sizeof(inodos[idx].block_pointers));
+    memset(inodos[idx].block_offsets, 0, sizeof(inodos[idx].block_offsets));
+    memset(inodos[idx].fragment_order, 0, sizeof(inodos[idx].fragment_order));
 
     // Guardar cambios en disco
     char pathi[1000];
@@ -916,6 +943,9 @@ static int fs_rmdir(const char *path) {
 
     // Limpiar y marcar el inodo como libre
     inodos[idx].used = 0;
+    memset(inodos[idx].block_pointers, 0, sizeof(inodos[idx].block_pointers));
+    memset(inodos[idx].block_offsets, 0, sizeof(inodos[idx].block_offsets));
+    memset(inodos[idx].fragment_order, 0, sizeof(inodos[idx].fragment_order));
     memset(&inodos[idx], 0, sizeof(Inode));
     inodos[idx].parent_inode = -1;
 

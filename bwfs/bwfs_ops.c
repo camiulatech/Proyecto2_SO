@@ -623,15 +623,32 @@ static int fs_write(const char *path, const char *buf, size_t size, off_t offset
         write_struct_to_png(pathb, tmp, BLOCK_SIZE);
 
         // Buscar slot libre en los arrays del inodo
+        // Verificar si el bloque ya estaba asignado al inodo
         int slot = -1;
         for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
-            if (inodo->block_pointers[j] == 0) {
-                slot = j;
+            if (inodo->block_pointers[j] == selected) {
+                slot = j; // Ya estaba asignado, solo actualizamos offset si queremos
                 break;
             }
         }
 
-        if (slot == -1) return -ENOSPC;
+        // Si no estaba asignado, buscar un slot nuevo
+        if (slot == -1) {
+            for (int j = 0; j < MAX_BLOCKS_PER_FILE; j++) {
+                if (inodo->block_pointers[j] == 0) {
+                    slot = j;
+                    inodo->block_pointers[slot] = selected;
+                    printf("[write] Asignando nuevo bloque %d al inodo %d (slot %d)\n", selected, inodo_idx, slot);
+                    break;
+                }
+            }
+        }
+
+        // Si no hay espacio, error
+        if (slot == -1) {
+            printf("[write] Error: inodo %d ya alcanzó el máximo de bloques permitidos\n", inodo_idx);
+            return -ENOSPC;
+        }
 
         // Registrar asignación
         inodo->block_pointers[slot] = selected;

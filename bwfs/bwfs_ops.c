@@ -14,7 +14,7 @@
 
 // --------------------- GLOBALS -------------------------
 Superblock sb;
-Inode *inodos;
+Inode inodos[MAX_FILES]; // Array de inodos
 char mount_folder[1000];
 uint8_t bitmap[MAX_BLOCKS];
 uint16_t used_bytes[MAX_BLOCKS];
@@ -36,13 +36,6 @@ UsedRegion regions_blocks[MAX_BLOCKS][MAX_REGIONES];
 // Carga los metadatos del sistema de archivos desde los PNGs
 void load_metadata() {
     char path[1000];
-
-    inodos = malloc(sizeof(Inode) * MAX_FILES);
-    if (!inodos) {
-        perror("Error al asignar memoria para inodos");
-        exit(1);
-    }
-    memset(inodos, 0, sizeof(Inode) * MAX_FILES);
 
     // Leer superbloque, inodos y bitmap desde PNGs
     snprintf(path, sizeof(path), "%s/block_0000.png", mount_folder);
